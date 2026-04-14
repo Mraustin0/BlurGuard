@@ -49,10 +49,15 @@ final class BlurStateManager: ObservableObject {
     private var runLoopSource: CFRunLoopSource?
     private var blurStartTime: Date = .distantPast
     private var fallbackTimer: Timer?
+    private var isAuthenticating = false
 
     private init() {
         sharedManagerRef = self
         startMonitoring()
+    }
+
+    deinit {
+        sharedManagerRef = nil
     }
 
     func shutdown() {
@@ -211,12 +216,12 @@ final class BlurStateManager: ObservableObject {
                 return Unmanaged.passRetained(event)
             }
 
-            let elapsed = Date().timeIntervalSince(manager.blurStartTime)
-            guard elapsed >= 1.0 else { return nil }
-
-            // FIX: capture manager weakly in async block to avoid retain cycle
+            // FIX: move elapsed + state check onto stateQueue so blurStartTime
+            // is always read on the same queue it is written on (no data race).
             manager.stateQueue.async { [weak manager] in
                 guard let manager else { return }
+                let elapsed = Date().timeIntervalSince(manager.blurStartTime)
+                guard elapsed >= 1.0 else { return }
                 if manager.currentState == .blurred {
                     manager.transitionTo(.unlocking)
                 }
@@ -241,6 +246,8 @@ final class BlurStateManager: ObservableObject {
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        // FIX: stop fallback polling now that the event tap is installed.
+        _stopFallbackPollingOnMain()
     }
 
     private func removeEventTap() {
@@ -294,6 +301,10 @@ final class BlurStateManager: ObservableObject {
     // MARK: - Unlock (main thread)
 
     private func attemptUnlock() {
+        // FIX: guard against concurrent auth calls (e.g. event fires during failure recovery)
+        guard !isAuthenticating else { return }
+        isAuthenticating = true
+
         stateQueue.async { [weak self] in
             self?.removeEventTap()
         }
@@ -304,6 +315,7 @@ final class BlurStateManager: ObservableObject {
         unlockHandler.authenticate { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.isAuthenticating = false
                 switch result {
                 case .success:
                     self.removeAllOverlays()

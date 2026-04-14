@@ -73,6 +73,7 @@ final class CountdownOverlay {
 
     func dismiss() {
         window?.orderOut(nil)
+        window?.close()
         window = nil
         countLabel = nil
         messageLabel = nil

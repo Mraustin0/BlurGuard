@@ -57,6 +57,7 @@ final class BlurOverlayWindow {
 
     func dismiss() {
         window.orderOut(nil)
+        window.close()
     }
 
     /// Keep blur visible but let clicks pass through to the system auth dialog.
