@@ -9,3 +9,4 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 build/
+dist/
