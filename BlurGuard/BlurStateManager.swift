@@ -262,7 +262,7 @@ final class BlurStateManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.fallbackTimer?.invalidate()
-            self.fallbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self.fallbackTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.stateQueue.async {
                     guard self.currentState == .blurred else { return }

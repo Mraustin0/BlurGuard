@@ -47,10 +47,16 @@ final class SettingsManager {
         ]
         let attributes: [CFString: Any] = [kSecValueData: data]
 
-        if SecItemUpdate(query as CFDictionary, attributes as CFDictionary) == errSecItemNotFound {
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData] = data
-            SecItemAdd(addQuery as CFDictionary, nil)
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                NSLog("[BlurGuard] Keychain add failed: \(addStatus)")
+            }
+        } else if updateStatus != errSecSuccess {
+            NSLog("[BlurGuard] Keychain update failed: \(updateStatus)")
         }
     }
 

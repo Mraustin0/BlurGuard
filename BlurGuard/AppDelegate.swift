@@ -28,6 +28,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateMenuBarIcon(for: state)
             }
             .store(in: &cancellables)
+
+        stateManager.$isEnabled
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                self?.statusItem.menu?.item(withTag: 1)?.state = enabled ? .on : .off
+            }
+            .store(in: &cancellables)
     }
 
     private func setupMenuBar() {

@@ -60,11 +60,18 @@ final class BlurOverlayWindow {
     }
 
     /// Keep blur visible but let clicks pass through to the system auth dialog.
+    /// passThrough(true)  → clicks pass through (auth dialog usable)
+    /// passThrough(false) → clicks blocked (screen is locked)
     func passThrough(_ enabled: Bool) {
-        window.ignoresMouseEvents = enabled
+        window.ignoresMouseEvents = enabled  // true = ignore = pass through
     }
 
+    private var messageDismissWorkItem: DispatchWorkItem?
+
     func showMessage(_ text: String) {
+        // Cancel any pending dismiss from a previous message
+        messageDismissWorkItem?.cancel()
+        messageDismissWorkItem = nil
         messageLabel?.removeFromSuperview()
 
         let label = NSTextField(labelWithString: text)
@@ -80,9 +87,11 @@ final class BlurOverlayWindow {
         ])
         messageLabel = label
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+        let workItem = DispatchWorkItem { [weak self] in
             self?.messageLabel?.removeFromSuperview()
             self?.messageLabel = nil
         }
+        messageDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: workItem)
     }
 }

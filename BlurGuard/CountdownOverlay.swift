@@ -6,7 +6,8 @@ final class CountdownOverlay {
     private var messageLabel: NSTextField?
 
     func show(count: Int) {
-        guard let mainScreen = NSScreen.main else { return }
+        // Fallback to first available screen if main is nil (e.g. display disconnected)
+        guard let mainScreen = NSScreen.main ?? NSScreen.screens.first else { return }
 
         let panelWidth: CGFloat = 300
         let panelHeight: CGFloat = 150
