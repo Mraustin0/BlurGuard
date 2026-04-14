@@ -45,7 +45,11 @@ final class SettingsManager {
             kSecAttrService: keychainService,
             kSecAttrAccount: requireAuthKeychainKey,
         ]
-        let attributes: [CFString: Any] = [kSecValueData: data]
+        // ThisDeviceOnly: prevents backup/migration to another device
+        let attributes: [CFString: Any] = [
+            kSecValueData: data,
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
 
         let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecItemNotFound {

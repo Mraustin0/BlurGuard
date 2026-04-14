@@ -9,13 +9,14 @@ enum BlurState: String {
     case unlocking
 }
 
-// Safe global reference for CGEventTap callback (avoids unmanaged pointer danger)
+// Weak global for CGEventTap C callback — avoids raw unmanaged pointer.
+// Access only inside the callback; do NOT store strong ref from here.
 private weak var sharedManagerRef: BlurStateManager?
 
 final class BlurStateManager: ObservableObject {
     static let shared = BlurStateManager()
 
-    // Serial queue — all state mutations happen here, no race conditions
+    // Serial queue — all state mutations run here.
     private let stateQueue = DispatchQueue(label: "com.blurguard.state", qos: .userInteractive)
 
     @Published private(set) var currentState: BlurState = .active
@@ -27,6 +28,8 @@ final class BlurStateManager: ObservableObject {
                     self.startMonitoring()
                 } else {
                     self.stopMonitoring()
+                    // FIX: also stop fallback polling when disabled via menu
+                    self._stopFallbackPollingOnMain()
                     DispatchQueue.main.async { self.removeAllOverlays() }
                     self.setState(.active)
                 }
@@ -53,17 +56,19 @@ final class BlurStateManager: ObservableObject {
     }
 
     func shutdown() {
-        stateQueue.sync {
-            stopMonitoring()
-            stopFallbackPolling()
-            removeEventTap()
+        // FIX: avoid deadlock — don't stateQueue.sync from main thread.
+        // Instead run cleanup async and let the run loop drain naturally.
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.stopMonitoring()
+            self.removeEventTap()
         }
+        _stopFallbackPollingOnMain()
         DispatchQueue.main.async { self.removeAllOverlays() }
     }
 
     // MARK: - Thread-safe state setter
 
-    /// Always call from stateQueue; publishes to main thread.
     private func setState(_ newState: BlurState) {
         guard currentState != newState else { return }
         DispatchQueue.main.async { self.currentState = newState }
@@ -92,7 +97,6 @@ final class BlurStateManager: ObservableObject {
     }
 
     private func transitionTo(_ newState: BlurState) {
-        // Must be called from stateQueue
         guard currentState != newState else { return }
         let oldState = currentState
         setState(newState)
@@ -134,7 +138,7 @@ final class BlurStateManager: ObservableObject {
             if self.countdownSeconds <= 0 {
                 self.countdownTimer?.invalidate()
                 self.countdownTimer = nil
-                self.stateQueue.async { self.transitionTo(.blurred) }
+                self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
             }
         }
     }
@@ -143,7 +147,7 @@ final class BlurStateManager: ObservableObject {
         countdownTimer?.invalidate()
         countdownTimer = nil
         dismissCountdownOverlay()
-        stateQueue.async { self.transitionTo(.active) }
+        stateQueue.async { [weak self] in self?.transitionTo(.active) }
     }
 
     private func showCountdownOverlay() {
@@ -169,9 +173,7 @@ final class BlurStateManager: ObservableObject {
     }
 
     private func removeAllOverlays() {
-        for window in blurWindows {
-            window.dismiss()
-        }
+        for window in blurWindows { window.dismiss() }
         blurWindows.removeAll()
     }
 
@@ -180,7 +182,6 @@ final class BlurStateManager: ObservableObject {
     private func installEventTap() {
         removeEventTap()
 
-        // Check Accessibility permission explicitly before attempting tap
         guard AXIsProcessTrusted() else {
             notifyAccessibilityRequired()
             startFallbackPolling()
@@ -194,9 +195,10 @@ final class BlurStateManager: ObservableObject {
             (1 << CGEventType.rightMouseDown.rawValue) |
             (1 << CGEventType.flagsChanged.rawValue)
 
-        // Safe callback: uses weak global ref instead of raw unmanaged pointer
+        // FIX: break retain cycle — callback captures nothing strongly.
+        // All access goes through sharedManagerRef (weak). The async block
+        // captures manager with [weak manager] so it doesn't extend lifetime.
         let callback: CGEventTapCallBack = { _, type, event, _ in
-            // Re-enable tap if disabled by system timeout
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                 if let tap = sharedManagerRef?.eventTap {
                     CGEvent.tapEnable(tap: tap, enable: true)
@@ -204,6 +206,7 @@ final class BlurStateManager: ObservableObject {
                 return Unmanaged.passRetained(event)
             }
 
+            // Snapshot weak ref once — safe for the duration of this C callback
             guard let manager = sharedManagerRef else {
                 return Unmanaged.passRetained(event)
             }
@@ -211,7 +214,9 @@ final class BlurStateManager: ObservableObject {
             let elapsed = Date().timeIntervalSince(manager.blurStartTime)
             guard elapsed >= 1.0 else { return nil }
 
-            manager.stateQueue.async {
+            // FIX: capture manager weakly in async block to avoid retain cycle
+            manager.stateQueue.async { [weak manager] in
+                guard let manager else { return }
                 if manager.currentState == .blurred {
                     manager.transitionTo(.unlocking)
                 }
@@ -264,12 +269,12 @@ final class BlurStateManager: ObservableObject {
             self.fallbackTimer?.invalidate()
             self.fallbackTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
-                self.stateQueue.async {
-                    guard self.currentState == .blurred else { return }
+                self.stateQueue.async { [weak self] in
+                    guard let self, self.currentState == .blurred else { return }
                     let elapsed = Date().timeIntervalSince(self.blurStartTime)
                     guard elapsed > 1.0 else { return }
                     if IdleMonitor.userIdleTime() < 1.0 {
-                        self.stopFallbackPolling()
+                        self._stopFallbackPollingOnMain()
                         self.transitionTo(.unlocking)
                     }
                 }
@@ -277,7 +282,9 @@ final class BlurStateManager: ObservableObject {
         }
     }
 
-    private func stopFallbackPolling() {
+    /// Stop fallback timer on main thread without going through stateQueue
+    /// (avoids deadlock when called from main or stateQueue).
+    private func _stopFallbackPollingOnMain() {
         DispatchQueue.main.async { [weak self] in
             self?.fallbackTimer?.invalidate()
             self?.fallbackTimer = nil
@@ -289,12 +296,10 @@ final class BlurStateManager: ObservableObject {
     private func attemptUnlock() {
         stateQueue.async { [weak self] in
             self?.removeEventTap()
-            self?.stopFallbackPolling()
         }
+        _stopFallbackPollingOnMain()
 
-        for window in blurWindows {
-            window.passThrough(true)
-        }
+        for window in blurWindows { window.passThrough(true) }
 
         unlockHandler.authenticate { [weak self] result in
             DispatchQueue.main.async {
@@ -302,7 +307,7 @@ final class BlurStateManager: ObservableObject {
                 switch result {
                 case .success:
                     self.removeAllOverlays()
-                    self.stateQueue.async { self.transitionTo(.active) }
+                    self.stateQueue.async { [weak self] in self?.transitionTo(.active) }
                 case .failure(let reason):
                     for window in self.blurWindows {
                         window.passThrough(false)
@@ -310,7 +315,7 @@ final class BlurStateManager: ObservableObject {
                     }
                     self.blurStartTime = Date()
                     self.installEventTap()
-                    self.stateQueue.async { self.transitionTo(.blurred) }
+                    self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
                 }
             }
         }
