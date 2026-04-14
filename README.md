@@ -18,14 +18,7 @@ A macOS menu bar app that automatically blurs your screen when idle, protecting 
 
 ## Installation
 
-### Option 1 — DMG Installer
-
-1. Download `BlurGuard-1.0.dmg` from the [Releases](https://github.com/Mraustin0/BlurGuard/releases) page
-2. Open the DMG file
-3. Drag `BlurGuard.app` into the `Applications` folder
-4. Open BlurGuard from Applications or Spotlight
-
-### Option 2 — Build from Source
+### Option 1 — Build from Source
 
 1. Clone the repository
 
