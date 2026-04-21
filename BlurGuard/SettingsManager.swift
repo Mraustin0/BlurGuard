@@ -6,13 +6,27 @@ final class SettingsManager {
 
     static let idleTimeoutKey = "idleTimeout"
     static let requireAuthKey = "requireAuth"
+    static let hotkeyKeyCodeKey = "hotkeyKeyCode"
+    static let hotkeyModifiersKey = "hotkeyModifiers"
+    static let hotkeyDisplayKey = "hotkeyDisplay"
+    static let ignoredBundleIDsKey = "ignoredBundleIDs"
 
     private let keychainService = "com.blurguard.app"
     private let requireAuthKeychainKey = "requireAuth"
 
     private init() {
         let defaults: [String: Any] = [
-            SettingsManager.idleTimeoutKey: 30.0
+            SettingsManager.idleTimeoutKey: 30.0,
+            SettingsManager.hotkeyKeyCodeKey: 37,    // L key
+            SettingsManager.hotkeyModifiersKey: 768, // ⌘⇧ (cmdKey=256 + shiftKey=512)
+            SettingsManager.hotkeyDisplayKey: "⌘⇧L",
+            SettingsManager.ignoredBundleIDsKey: [
+                "us.zoom.xos",
+                "com.microsoft.teams",
+                "com.microsoft.teams2",
+                "com.cisco.webexmeetings",
+                "com.apple.FaceTime",
+            ],
         ]
         UserDefaults.standard.register(defaults: defaults)
     }
@@ -28,6 +42,35 @@ final class SettingsManager {
         set {
             let clamped = min(max(newValue, 10), 600)
             UserDefaults.standard.set(clamped, forKey: SettingsManager.idleTimeoutKey)
+        }
+    }
+
+    // MARK: - Hotkey (UserDefaults)
+
+    var hotkeyKeyCode: Int {
+        get { UserDefaults.standard.integer(forKey: Self.hotkeyKeyCodeKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.hotkeyKeyCodeKey) }
+    }
+
+    var hotkeyModifiers: Int {
+        get { UserDefaults.standard.integer(forKey: Self.hotkeyModifiersKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.hotkeyModifiersKey) }
+    }
+
+    var hotkeyDisplay: String {
+        get { UserDefaults.standard.string(forKey: Self.hotkeyDisplayKey) ?? "⌘⇧L" }
+        set { UserDefaults.standard.set(newValue, forKey: Self.hotkeyDisplayKey) }
+    }
+
+    // MARK: - Ignored Bundle IDs (UserDefaults)
+
+    var ignoredBundleIDs: Set<String> {
+        get {
+            let arr = (UserDefaults.standard.array(forKey: Self.ignoredBundleIDsKey) as? [String]) ?? []
+            return Set(arr)
+        }
+        set {
+            UserDefaults.standard.set(Array(newValue), forKey: Self.ignoredBundleIDsKey)
         }
     }
 

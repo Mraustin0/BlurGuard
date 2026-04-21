@@ -20,6 +20,13 @@ final class BlurStateManager: ObservableObject {
     private let stateQueue = DispatchQueue(label: "com.blurguard.state", qos: .userInteractive)
 
     @Published private(set) var currentState: BlurState = .active
+    // Shadow var — only read/written on stateQueue to avoid data races with @Published writes on main.
+    private var queueState: BlurState = .active
+    private var queuePaused = false              // stateQueue only
+    @Published private(set) var isPaused = false       // main thread
+    @Published private(set) var pauseEndDate: Date? = nil  // main thread
+    private var pauseTimer: Timer?             // main thread
+
     @Published var isEnabled: Bool = true {
         didSet {
             stateQueue.async { [weak self] in
@@ -72,10 +79,61 @@ final class BlurStateManager: ObservableObject {
         DispatchQueue.main.async { self.removeAllOverlays() }
     }
 
+    // MARK: - Public control
+
+    func triggerInstantBlur() {
+        stateQueue.async { [weak self] in
+            guard let self, self.isEnabled, !self.queuePaused else { return }
+            guard self.queueState == .active || self.queueState == .countdown else { return }
+            self.stopMonitoring()
+            self.transitionTo(.blurred)
+        }
+    }
+
+    func pause(for duration: TimeInterval?) {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.queuePaused = true
+            self.stopMonitoring()
+            self._stopFallbackPollingOnMain()
+            DispatchQueue.main.async { self.removeAllOverlays() }
+            self.setState(.active)
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isPaused = true
+            self.pauseTimer?.invalidate()
+            if let duration {
+                self.pauseEndDate = Date().addingTimeInterval(duration)
+                self.pauseTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+                    self?.resume()
+                }
+            } else {
+                self.pauseEndDate = nil
+            }
+        }
+    }
+
+    func resume() {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.queuePaused = false
+            if self.isEnabled { self.startMonitoring() }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isPaused = false
+            self.pauseEndDate = nil
+            self.pauseTimer?.invalidate()
+            self.pauseTimer = nil
+        }
+    }
+
     // MARK: - Thread-safe state setter
 
     private func setState(_ newState: BlurState) {
-        guard currentState != newState else { return }
+        guard queueState != newState else { return }
+        queueState = newState
         DispatchQueue.main.async { self.currentState = newState }
     }
 
@@ -95,15 +153,19 @@ final class BlurStateManager: ObservableObject {
     }
 
     private func handleIdleUpdate(_ idleTime: TimeInterval) {
-        guard isEnabled else { return }
-        if currentState == .active, idleTime >= settings.idleTimeout {
+        guard isEnabled, !queuePaused else { return }
+        if !settings.ignoredBundleIDs.isEmpty {
+            let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+            if !settings.ignoredBundleIDs.isDisjoint(with: running) { return }
+        }
+        if queueState == .active, idleTime >= settings.idleTimeout {
             transitionTo(.countdown)
         }
     }
 
     private func transitionTo(_ newState: BlurState) {
-        guard currentState != newState else { return }
-        let oldState = currentState
+        guard queueState != newState else { return }
+        let oldState = queueState
         setState(newState)
 
         switch newState {
@@ -117,7 +179,9 @@ final class BlurStateManager: ObservableObject {
                 DispatchQueue.main.async { self.dismissCountdownOverlay() }
             }
             blurStartTime = Date()
-            DispatchQueue.main.async { self.showBlurOverlays() }
+            if oldState != .unlocking {
+                DispatchQueue.main.async { self.showBlurOverlays() }
+            }
             installEventTap()
         case .unlocking:
             DispatchQueue.main.async { self.attemptUnlock() }
@@ -222,7 +286,7 @@ final class BlurStateManager: ObservableObject {
                 guard let manager else { return }
                 let elapsed = Date().timeIntervalSince(manager.blurStartTime)
                 guard elapsed >= 1.0 else { return }
-                if manager.currentState == .blurred {
+                if manager.queueState == .blurred {
                     manager.transitionTo(.unlocking)
                 }
             }
@@ -277,7 +341,7 @@ final class BlurStateManager: ObservableObject {
             self.fallbackTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 self.stateQueue.async { [weak self] in
-                    guard let self, self.currentState == .blurred else { return }
+                    guard let self, self.queueState == .blurred else { return }
                     let elapsed = Date().timeIntervalSince(self.blurStartTime)
                     guard elapsed > 1.0 else { return }
                     if IdleMonitor.userIdleTime() < 1.0 {
@@ -325,8 +389,6 @@ final class BlurStateManager: ObservableObject {
                         window.passThrough(false)
                         window.showMessage(reason)
                     }
-                    self.blurStartTime = Date()
-                    self.installEventTap()
                     self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
                 }
             }

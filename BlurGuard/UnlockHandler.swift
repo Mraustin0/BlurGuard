@@ -8,6 +8,11 @@ enum UnlockResult {
 
 final class UnlockHandler {
     func authenticate(completion: @escaping (UnlockResult) -> Void) {
+        guard SettingsManager.shared.requireAuth else {
+            completion(.success)
+            return
+        }
+
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
 
