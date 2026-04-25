@@ -9,6 +9,10 @@ enum BlurState: String {
     case unlocking
 }
 
+enum BlurReason {
+    case idle, cameraAway, cameraPeek, manual
+}
+
 // Weak global for CGEventTap C callback — avoids raw unmanaged pointer.
 // Access only inside the callback; do NOT store strong ref from here.
 private weak var sharedManagerRef: BlurStateManager?
@@ -20,6 +24,8 @@ final class BlurStateManager: ObservableObject {
     private let stateQueue = DispatchQueue(label: "com.blurguard.state", qos: .userInteractive)
 
     @Published private(set) var currentState: BlurState = .active
+    @Published private(set) var peekCount: Int = 0
+    private(set) var lastBlurReason: BlurReason = .idle
     // Shadow var — only read/written on stateQueue to avoid data races with @Published writes on main.
     private var queueState: BlurState = .active
     private var queuePaused = false              // stateQueue only
@@ -93,16 +99,20 @@ final class BlurStateManager: ObservableObject {
 
     private func setupCameraCallbacks() {
         cameraMonitor.onPeekDetected = { [weak self] in
-            self?.stateQueue.async { self?.triggerFromCamera() }
+            self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraPeek) }
         }
         cameraMonitor.onUserAway = { [weak self] in
-            self?.stateQueue.async { self?.triggerFromCamera() }
+            self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraAway) }
         }
     }
 
-    private func triggerFromCamera() {
+    private func triggerFromCamera(reason: BlurReason) {
         guard isEnabled, !queuePaused else { return }
         guard queueState == .active || queueState == .countdown else { return }
+        lastBlurReason = reason
+        if reason == .cameraPeek {
+            DispatchQueue.main.async { self.peekCount += 1 }
+        }
         stopMonitoring()
         transitionTo(.blurred)
     }
@@ -121,6 +131,7 @@ final class BlurStateManager: ObservableObject {
         stateQueue.async { [weak self] in
             guard let self, self.isEnabled, !self.queuePaused else { return }
             guard self.queueState == .active || self.queueState == .countdown else { return }
+            self.lastBlurReason = .manual
             self.stopMonitoring()
             self.transitionTo(.blurred)
         }
@@ -197,6 +208,7 @@ final class BlurStateManager: ObservableObject {
             if !settings.ignoredBundleIDs.isDisjoint(with: running) { return }
         }
         if queueState == .active, idleTime >= settings.idleTimeout {
+            lastBlurReason = .idle
             transitionTo(.countdown)
         }
     }
@@ -272,8 +284,9 @@ final class BlurStateManager: ObservableObject {
 
     private func showBlurOverlays() {
         removeAllOverlays()
+        let reason = lastBlurReason
         for screen in NSScreen.screens {
-            let window = BlurOverlayWindow(screen: screen)
+            let window = BlurOverlayWindow(screen: screen, reason: reason)
             window.show()
             blurWindows.append(window)
         }
@@ -414,7 +427,14 @@ final class BlurStateManager: ObservableObject {
 
         for window in blurWindows { window.passThrough(true) }
 
-        unlockHandler.authenticate { [weak self] result in
+        let needsAuth: Bool
+        switch lastBlurReason {
+        case .cameraPeek: needsAuth = settings.peekResponse == "lock"
+        case .cameraAway: needsAuth = settings.awayResponse == "lock"
+        case .idle, .manual: needsAuth = settings.requireAuth
+        }
+
+        unlockHandler.authenticate(requireAuth: needsAuth) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isAuthenticating = false

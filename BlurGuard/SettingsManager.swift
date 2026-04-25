@@ -12,6 +12,9 @@ final class SettingsManager {
     static let ignoredBundleIDsKey = "ignoredBundleIDs"
     static let cameraEnabledKey = "cameraEnabled"
     static let cameraAwayDelayKey = "cameraAwayDelay"
+    static let cameraSensitivityKey = "cameraSensitivity"
+    static let peekResponseKey = "peekResponse"
+    static let awayResponseKey = "awayResponse"
 
     private let keychainService = "com.blurguard.app"
     private let requireAuthKeychainKey = "requireAuth"
@@ -22,8 +25,11 @@ final class SettingsManager {
             SettingsManager.hotkeyKeyCodeKey: 37,    // L key
             SettingsManager.hotkeyModifiersKey: 768, // ⇧⌘ (shiftKey=512 + cmdKey=256)
             SettingsManager.hotkeyDisplayKey: "⇧⌘L",
-            SettingsManager.cameraEnabledKey: true,
+            SettingsManager.cameraEnabledKey: false,
             SettingsManager.cameraAwayDelayKey: 8,
+            SettingsManager.cameraSensitivityKey: 0.6,
+            SettingsManager.peekResponseKey: "blur",
+            SettingsManager.awayResponseKey: "blur",
             SettingsManager.ignoredBundleIDsKey: [
                 "us.zoom.xos",
                 "com.microsoft.teams",
@@ -91,6 +97,24 @@ final class SettingsManager {
             return v == 0 ? 8 : v
         }
         set { UserDefaults.standard.set(newValue, forKey: Self.cameraAwayDelayKey) }
+    }
+
+    var cameraSensitivity: Double {
+        get {
+            let v = UserDefaults.standard.double(forKey: Self.cameraSensitivityKey)
+            return v == 0 ? 0.6 : v
+        }
+        set { UserDefaults.standard.set(min(max(newValue, 0), 1), forKey: Self.cameraSensitivityKey) }
+    }
+
+    var peekResponse: String {
+        get { UserDefaults.standard.string(forKey: Self.peekResponseKey) ?? "blur" }
+        set { UserDefaults.standard.set(newValue, forKey: Self.peekResponseKey) }
+    }
+
+    var awayResponse: String {
+        get { UserDefaults.standard.string(forKey: Self.awayResponseKey) ?? "blur" }
+        set { UserDefaults.standard.set(newValue, forKey: Self.awayResponseKey) }
     }
 
     // MARK: - Require Auth (Keychain — tamper-resistant)

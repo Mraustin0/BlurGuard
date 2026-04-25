@@ -82,8 +82,10 @@ extension CameraPresenceMonitor: AVCaptureVideoDataOutputSampleBufferDelegate {
         try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
             .perform([request])
 
+        let sensitivity = SettingsManager.shared.cameraSensitivity
+        let threshold = Float(0.7 - sensitivity * 0.5)   // 0.7 (low sens) → 0.2 (high sens)
         let count = request.results?
-            .filter { $0.confidence >= 0.5 }
+            .filter { $0.confidence >= threshold }
             .count ?? 0
 
         handleFaceCount(count, at: now)

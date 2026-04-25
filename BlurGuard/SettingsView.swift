@@ -1,14 +1,19 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Main Settings View
+// MARK: - Settings View
 
 struct SettingsView: View {
-    @AppStorage(SettingsManager.cameraEnabledKey)   private var cameraEnabled: Bool   = true
-    @AppStorage(SettingsManager.cameraAwayDelayKey) private var cameraAwayDelay: Int  = 8
-    @AppStorage(SettingsManager.idleTimeoutKey)     private var idleTimeout: Double   = 30.0
-    @State private var requireAuth:      Bool   = SettingsManager.shared.requireAuth
-    @State private var hotkeyDisplay:    String = SettingsManager.shared.hotkeyDisplay
+    @ObservedObject private var state = BlurStateManager.shared
+
+    @AppStorage(SettingsManager.cameraEnabledKey)    private var cameraEnabled: Bool   = false
+    @AppStorage(SettingsManager.cameraAwayDelayKey)  private var cameraAwayDelay: Int  = 8
+    @AppStorage(SettingsManager.cameraSensitivityKey) private var sensitivity: Double  = 0.6
+    @AppStorage(SettingsManager.idleTimeoutKey)      private var idleTimeout: Double   = 30.0
+    @AppStorage(SettingsManager.peekResponseKey)     private var peekResponse: String  = "blur"
+    @AppStorage(SettingsManager.awayResponseKey)     private var awayResponse: String  = "blur"
+    @State private var requireAuth: Bool   = SettingsManager.shared.requireAuth
+    @State private var hotkeyDisplay: String = SettingsManager.shared.hotkeyDisplay
     @State private var isRecordingHotkey = false
     @State private var keyMonitor: Any?
     @State private var ignoredApps: [IgnoredApp] = Self.loadIgnoredApps()
@@ -17,67 +22,134 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerRow
-            glDivider
 
-            ScrollView {
+            ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
-                    glSectionLabel("Camera Protection")
-                    cameraSection
+                    // PEEK RESPONSE
+                    glSection("Peek Response") {
+                        PillPicker(options: ["Blur", "Lock"], selection: $peekResponse)
+                            .onChange(of: peekResponse) { SettingsManager.shared.peekResponse = $0 }
+                    }
+
                     glDivider
 
-                    glSectionLabel("Idle Lock")
-                    glRow {
-                        glIcon("timer")
-                        Text("Blur after idle").glText()
-                        Spacer()
-                        Picker("", selection: $idleTimeout) {
-                            Text("15s").tag(15.0)
-                            Text("30s").tag(30.0)
-                            Text("1m").tag(60.0)
-                            Text("2m").tag(120.0)
-                            Text("5m").tag(300.0)
-                            Text("10m").tag(600.0)
+                    // WALK-AWAY RESPONSE
+                    glSection("Walk-Away Response") {
+                        PillPicker(options: ["Blur", "Lock"], selection: $awayResponse)
+                            .onChange(of: awayResponse) { SettingsManager.shared.awayResponse = $0 }
+                    }
+
+                    glDivider
+
+                    // DETECTION
+                    glSectionLabel("Detection")
+
+                    VStack(spacing: 0) {
+                        glRow {
+                            Text("Sensitivity").glText()
+                            Spacer()
                         }
-                        .pickerStyle(.menu)
-                        .frame(width: 70)
-                        .onChange(of: idleTimeout) { SettingsManager.shared.idleTimeout = $0 }
-                    }
-                    glDivider
+                        Slider(value: $sensitivity, in: 0...1)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 4)
+                            .onChange(of: sensitivity) { SettingsManager.shared.cameraSensitivity = $0 }
 
-                    glSectionLabel("Security")
-                    glRow {
-                        glIcon("faceid")
-                        Text("Require auth to unlock").glText()
-                        Spacer()
-                        Toggle("", isOn: $requireAuth)
-                            .labelsHidden()
-                            .onChange(of: requireAuth) { SettingsManager.shared.requireAuth = $0 }
-                    }
-                    glDivider
+                        glInsetDivider
 
-                    glSectionLabel("Instant Lock")
-                    glRow {
-                        glIcon("keyboard")
-                        Text("Hotkey").glText()
-                        Spacer()
-                        Button(isRecordingHotkey ? "Press combo…" : hotkeyDisplay) {
-                            isRecordingHotkey = true
+                        glRow {
+                            Image(systemName: "camera.fill").glIcon()
+                            Text("Camera protection").glText()
+                            Spacer()
+                            Toggle("", isOn: $cameraEnabled)
+                                .labelsHidden()
+                                .onChange(of: cameraEnabled) { SettingsManager.shared.cameraEnabled = $0 }
                         }
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.75))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.12))
-                        .cornerRadius(6)
-                        .buttonStyle(.plain)
+
+                        glInsetDivider
+
+                        glRow {
+                            Image(systemName: "figure.walk").glIcon()
+                            Text("Walk-away delay").glText()
+                            Spacer()
+                            Picker("", selection: $cameraAwayDelay) {
+                                Text("3s").tag(3)
+                                Text("5s").tag(5)
+                                Text("8s").tag(8)
+                                Text("15s").tag(15)
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 68)
+                            .onChange(of: cameraAwayDelay) { SettingsManager.shared.cameraAwayDelay = $0 }
+                        }
+
+                        glInsetDivider
+
+                        glRow {
+                            Image(systemName: "timer").glIcon()
+                            Text("Idle lock after").glText()
+                            Spacer()
+                            Picker("", selection: $idleTimeout) {
+                                Text("15s").tag(15.0)
+                                Text("30s").tag(30.0)
+                                Text("1m").tag(60.0)
+                                Text("2m").tag(120.0)
+                                Text("5m").tag(300.0)
+                                Text("10m").tag(600.0)
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 68)
+                            .onChange(of: idleTimeout) { SettingsManager.shared.idleTimeout = $0 }
+                        }
+
+                        glInsetDivider
+
+                        glRow {
+                            Image(systemName: "faceid").glIcon()
+                            Text("Require auth to unlock").glText()
+                            Spacer()
+                            Toggle("", isOn: $requireAuth)
+                                .labelsHidden()
+                                .onChange(of: requireAuth) { SettingsManager.shared.requireAuth = $0 }
+                        }
+
+                        glInsetDivider
+
+                        glRow {
+                            Image(systemName: "keyboard").glIcon()
+                            Text("Hotkey").glText()
+                            Spacer()
+                            Button(isRecordingHotkey ? "Press combo…" : hotkeyDisplay) {
+                                isRecordingHotkey = true
+                            }
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.75))
+                            .padding(.horizontal, 9).padding(.vertical, 4)
+                            .background(Color.white.opacity(0.12))
+                            .cornerRadius(6)
+                            .buttonStyle(.plain)
+                        }
+                        .onChange(of: isRecordingHotkey) { recording in
+                            recording ? startRecording() : stopRecording()
+                        }
                     }
-                    .onChange(of: isRecordingHotkey) { recording in
-                        recording ? startRecording() : stopRecording()
-                    }
+
                     glDivider
 
+                    // AUTO-PAUSE APPS
                     glSectionLabel("Auto-Pause Apps")
                     autoPauseSection
+
+                    glDivider
+
+                    // TODAY
+                    glSectionLabel("Today")
+                    glRow {
+                        Text("\(state.peekCount) peek\(state.peekCount == 1 ? "" : "s")")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(.white)
+                        Spacer()
+                    }
+                    .padding(.bottom, 4)
                 }
             }
 
@@ -85,7 +157,7 @@ struct SettingsView: View {
             footerRow
         }
         .frame(width: 300)
-        .background(glBackground)
+        .background(Color.clear)
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showAppPicker) {
             AppPickerView(existingIDs: Set(ignoredApps.map(\.bundleID))) { addApp($0) }
@@ -97,50 +169,23 @@ struct SettingsView: View {
     private var headerRow: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(cameraEnabled ? Color.green : Color.gray.opacity(0.6))
+                .fill(cameraEnabled ? Color.green : Color(white: 0.45))
                 .frame(width: 8, height: 8)
-            Text("BlurGuard")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white)
-            Text("· \(cameraEnabled ? "Camera Active" : "Idle Only")")
-                .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.45))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("BlurGuard")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                Text("Monitoring · \(state.peekCount) peek\(state.peekCount == 1 ? "" : "s") today")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.45))
+            }
             Spacer()
+            Image(systemName: "gearshape")
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.35))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-    }
-
-    // MARK: - Camera section
-
-    private var cameraSection: some View {
-        VStack(spacing: 0) {
-            glRow {
-                glIcon("camera.fill")
-                Text("Camera Protection").glText()
-                Spacer()
-                Toggle("", isOn: $cameraEnabled)
-                    .labelsHidden()
-                    .onChange(of: cameraEnabled) { SettingsManager.shared.cameraEnabled = $0 }
-            }
-            if cameraEnabled {
-                glInsetDivider
-                glRow {
-                    glIcon("figure.walk")
-                    Text("Blur when away for").glText()
-                    Spacer()
-                    Picker("", selection: $cameraAwayDelay) {
-                        Text("3s").tag(3)
-                        Text("5s").tag(5)
-                        Text("8s").tag(8)
-                        Text("15s").tag(15)
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: 70)
-                    .onChange(of: cameraAwayDelay) { SettingsManager.shared.cameraAwayDelay = $0 }
-                }
-            }
-        }
     }
 
     // MARK: - Auto-pause section
@@ -153,27 +198,23 @@ struct SettingsView: View {
                         if let icon = app.icon {
                             Image(nsImage: icon).resizable().frame(width: 16, height: 16)
                         } else {
-                            glIcon("app.fill")
+                            Image(systemName: "app.fill").glIcon()
                         }
                     }
                     Text(app.name).glText()
                     Spacer()
                     Button { removeApp(app.bundleID) } label: {
                         Image(systemName: "minus.circle.fill")
-                            .foregroundColor(.red.opacity(0.75))
-                            .font(.system(size: 15))
-                    }
-                    .buttonStyle(.plain)
+                            .foregroundColor(.red.opacity(0.75)).font(.system(size: 15))
+                    }.buttonStyle(.plain)
                 }
                 glInsetDivider
             }
             glRow {
                 Image(systemName: "plus.circle.fill")
-                    .foregroundColor(.accentColor)
-                    .font(.system(size: 15))
+                    .foregroundColor(.accentColor).font(.system(size: 15))
                 Text("Add Running App…")
-                    .font(.system(size: 13))
-                    .foregroundColor(.accentColor)
+                    .font(.system(size: 13)).foregroundColor(.accentColor)
                 Spacer()
             }
             .contentShape(Rectangle())
@@ -186,20 +227,15 @@ struct SettingsView: View {
     private var footerRow: some View {
         HStack {
             Button("Pause 1 hour") { BlurStateManager.shared.pause(for: 3600) }
-                .buttonStyle(.plain)
-                .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.55))
+                .buttonStyle(.plain).font(.system(size: 13)).foregroundColor(.white.opacity(0.5))
             Spacer()
             Button("Quit") {
                 BlurStateManager.shared.shutdown()
                 NSApp.terminate(nil)
             }
-            .buttonStyle(.plain)
-            .font(.system(size: 13))
-            .foregroundColor(.white.opacity(0.55))
+            .buttonStyle(.plain).font(.system(size: 13)).foregroundColor(.white.opacity(0.5))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 16).padding(.vertical, 12)
     }
 
     // MARK: - Shared components
@@ -220,27 +256,26 @@ struct SettingsView: View {
                 .tracking(0.8)
             Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 6)
+    }
+
+    private func glSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
+            glSectionLabel(title)
+            HStack { content(); Spacer() }
+                .padding(.horizontal, 16).padding(.bottom, 12)
+        }
     }
 
     @ViewBuilder
     private func glRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 10) { content() }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16).padding(.vertical, 10)
     }
 
     private func glIcon(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.system(size: 13))
-            .foregroundColor(.white.opacity(0.55))
-            .frame(width: 18)
-    }
-
-    private var glBackground: some View {
-        Color(red: 0.10, green: 0.12, blue: 0.20)
+            .font(.system(size: 13)).foregroundColor(.white.opacity(0.5)).frame(width: 18)
     }
 
     // MARK: - Hotkey recording
@@ -268,7 +303,7 @@ struct SettingsView: View {
         if let m = keyMonitor { NSEvent.removeMonitor(m); keyMonitor = nil }
     }
 
-    // MARK: - Ignored apps helpers
+    // MARK: - App management
 
     private static func loadIgnoredApps() -> [IgnoredApp] {
         SettingsManager.shared.ignoredBundleIDs
@@ -291,6 +326,38 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Pill Picker
+
+struct PillPicker: View {
+    let options: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.self) { option in
+                Button(option) { selection = option.lowercased() }
+                    .buttonStyle(PillButtonStyle(isSelected: selection == option.lowercased()))
+            }
+        }
+        .padding(3)
+        .background(Color.white.opacity(0.1))
+        .clipShape(Capsule())
+    }
+}
+
+struct PillButtonStyle: ButtonStyle {
+    let isSelected: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .foregroundColor(isSelected ? Color(white: 0.1) : .white.opacity(0.7))
+            .padding(.horizontal, 18).padding(.vertical, 6)
+            .background(isSelected ? Color.white : Color.clear)
+            .clipShape(Capsule())
+            .animation(.easeInOut(duration: 0.15), value: isSelected)
+    }
+}
+
 // MARK: - Text modifier
 
 extension Text {
@@ -299,7 +366,13 @@ extension Text {
     }
 }
 
-// MARK: - Supporting types (IgnoredApp, AppPickerView)
+extension Image {
+    func glIcon() -> some View {
+        self.font(.system(size: 13)).foregroundColor(.white.opacity(0.5)).frame(width: 18)
+    }
+}
+
+// MARK: - Supporting types
 
 struct IgnoredApp: Identifiable {
     let bundleID: String
@@ -333,13 +406,10 @@ struct AppPickerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("Choose an App to Pause For")
-                .font(.headline)
-                .padding()
+            Text("Choose an App to Pause For").font(.headline).padding()
             Divider()
             if candidates.isEmpty {
-                Text("No other apps running")
-                    .foregroundColor(.secondary)
+                Text("No other apps running").foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(candidates, id: \.bundleIdentifier) { app in

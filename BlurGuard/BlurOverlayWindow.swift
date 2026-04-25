@@ -2,15 +2,15 @@ import Cocoa
 
 final class BlurOverlayWindow {
     private let window: NSWindow
-    private let blurView: NSVisualEffectView
+    private let contentView: NSView
     private var messageLabel: NSTextField?
+    private var messageDismissWorkItem: DispatchWorkItem?
 
-    init(screen: NSScreen) {
-        blurView = NSVisualEffectView(frame: NSRect(origin: .zero, size: screen.frame.size))
-        blurView.material = .hudWindow
-        blurView.blendingMode = .behindWindow
-        blurView.state = .active
-        blurView.autoresizingMask = [.width, .height]
+    init(screen: NSScreen, reason: BlurReason) {
+        contentView = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        contentView.wantsLayer = true
+        contentView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.82).cgColor
+        contentView.autoresizingMask = [.width, .height]
 
         window = NSWindow(
             contentRect: screen.frame,
@@ -23,29 +23,61 @@ final class BlurOverlayWindow {
         window.backgroundColor = .clear
         window.ignoresMouseEvents = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.contentView = blurView
+        window.contentView = contentView
         window.setFrame(screen.frame, display: true)
 
-        // Lock icon in center
-        let lockIcon = NSImageView()
-        lockIcon.image = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Locked")
-        lockIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 64, weight: .light)
-        lockIcon.contentTintColor = .white
-        lockIcon.translatesAutoresizingMaskIntoConstraints = false
-        blurView.addSubview(lockIcon)
+        setupContent(for: reason)
+    }
 
-        let label = NSTextField(labelWithString: "BlurGuard Active")
-        label.font = NSFont.systemFont(ofSize: 20, weight: .medium)
-        label.textColor = .white
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        blurView.addSubview(label)
+    private func setupContent(for reason: BlurReason) {
+        let (iconName, title, subtitle): (String, String, String)
+        switch reason {
+        case .cameraAway:
+            iconName  = "figure.walk"
+            title     = "You Walked Away"
+            subtitle  = "Screen protected until you return"
+        case .cameraPeek:
+            iconName  = "eye.slash.fill"
+            title     = "Someone's Watching"
+            subtitle  = "Screen protected"
+        case .idle:
+            iconName  = "lock.fill"
+            title     = "Screen Locked"
+            subtitle  = "Press any key to unlock"
+        case .manual:
+            iconName  = "lock.fill"
+            title     = "Screen Locked"
+            subtitle  = "Press any key to unlock"
+        }
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 72, weight: .light)
+        icon.contentTintColor = .white
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(icon)
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = NSFont.systemFont(ofSize: 24, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.alignment = .center
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(titleLabel)
+
+        let subtitleLabel = NSTextField(labelWithString: subtitle)
+        subtitleLabel.font = NSFont.systemFont(ofSize: 15, weight: .regular)
+        subtitleLabel.textColor = NSColor.white.withAlphaComponent(0.5)
+        subtitleLabel.alignment = .center
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(subtitleLabel)
 
         NSLayoutConstraint.activate([
-            lockIcon.centerXAnchor.constraint(equalTo: blurView.centerXAnchor),
-            lockIcon.centerYAnchor.constraint(equalTo: blurView.centerYAnchor, constant: -30),
-            label.centerXAnchor.constraint(equalTo: blurView.centerXAnchor),
-            label.topAnchor.constraint(equalTo: lockIcon.bottomAnchor, constant: 16),
+            icon.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            icon.centerYAnchor.constraint(equalTo: contentView.centerYAnchor, constant: -44),
+            titleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            titleLabel.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 20),
+            subtitleLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
         ])
     }
 
@@ -60,31 +92,25 @@ final class BlurOverlayWindow {
         window.close()
     }
 
-    /// Keep blur visible but let clicks pass through to the system auth dialog.
-    /// passThrough(true)  → clicks pass through (auth dialog usable)
-    /// passThrough(false) → clicks blocked (screen is locked)
     func passThrough(_ enabled: Bool) {
-        window.ignoresMouseEvents = enabled  // true = ignore = pass through
+        window.ignoresMouseEvents = enabled
     }
 
-    private var messageDismissWorkItem: DispatchWorkItem?
-
     func showMessage(_ text: String) {
-        // Cancel any pending dismiss from a previous message
         messageDismissWorkItem?.cancel()
         messageDismissWorkItem = nil
         messageLabel?.removeFromSuperview()
 
         let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: 16, weight: .medium)
+        label.font = NSFont.systemFont(ofSize: 15, weight: .medium)
         label.textColor = .systemRed
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
-        blurView.addSubview(label)
+        contentView.addSubview(label)
 
         NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: blurView.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: blurView.centerYAnchor, constant: 60),
+            label.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: contentView.centerYAnchor, constant: 80),
         ])
         messageLabel = label
 

@@ -7,8 +7,8 @@ enum UnlockResult {
 }
 
 final class UnlockHandler {
-    func authenticate(completion: @escaping (UnlockResult) -> Void) {
-        guard SettingsManager.shared.requireAuth else {
+    func authenticate(requireAuth: Bool, completion: @escaping (UnlockResult) -> Void) {
+        guard requireAuth else {
             completion(.success)
             return
         }
@@ -18,7 +18,6 @@ final class UnlockHandler {
 
         var authError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
-            // Do NOT silently unlock — authentication is unavailable, report it
             let reason = authError?.localizedDescription ?? "Authentication unavailable"
             completion(.failure("Cannot authenticate: \(reason)"))
             return
