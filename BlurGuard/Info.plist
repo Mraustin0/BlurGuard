@@ -24,5 +24,7 @@
 	<true/>
 	<key>NSFaceIDUsageDescription</key>
 	<string>BlurGuard uses biometric authentication to unlock the screen.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>BlurGuard uses the camera to detect when you walk away or someone peeks at your screen. No images are stored or transmitted.</string>
 </dict>
 </plist>

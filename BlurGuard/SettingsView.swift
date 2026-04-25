@@ -3,6 +3,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage(SettingsManager.idleTimeoutKey) private var idleTimeout: Double = 30.0
+    @AppStorage(SettingsManager.cameraEnabledKey) private var cameraEnabled: Bool = true
+    @AppStorage(SettingsManager.cameraAwayDelayKey) private var cameraAwayDelay: Int = 8
     @State private var requireAuth: Bool = SettingsManager.shared.requireAuth
     @State private var hotkeyDisplay: String = SettingsManager.shared.hotkeyDisplay
     @State private var isRecordingHotkey = false
@@ -13,9 +15,35 @@ struct SettingsView: View {
     private let timeoutOptions: [(label: String, seconds: Double)] = [
         ("15s", 15), ("30s", 30), ("1m", 60), ("2m", 120), ("5m", 300), ("10m", 600),
     ]
+    private let awayDelayOptions: [(label: String, seconds: Int)] = [
+        ("3s", 3), ("5s", 5), ("8s", 8), ("15s", 15),
+    ]
 
     var body: some View {
         Form {
+            Section("Camera Protection") {
+                Toggle("Enable Camera Protection", isOn: $cameraEnabled)
+                    .onChange(of: cameraEnabled) { SettingsManager.shared.cameraEnabled = $0 }
+
+                if cameraEnabled {
+                    HStack {
+                        Text("Blur when away for")
+                        Spacer()
+                        Picker("", selection: $cameraAwayDelay) {
+                            ForEach(awayDelayOptions, id: \.seconds) { opt in
+                                Text(opt.label).tag(opt.seconds)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 180)
+                        .onChange(of: cameraAwayDelay) { SettingsManager.shared.cameraAwayDelay = $0 }
+                    }
+                    Text("Blurs instantly if someone peeks at your screen, or after the delay if you walk away.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Section("Idle Timeout") {
                 Picker("", selection: $idleTimeout) {
                     ForEach(timeoutOptions, id: \.seconds) { opt in

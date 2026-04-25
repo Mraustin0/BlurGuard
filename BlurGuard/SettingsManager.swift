@@ -10,6 +10,8 @@ final class SettingsManager {
     static let hotkeyModifiersKey = "hotkeyModifiers"
     static let hotkeyDisplayKey = "hotkeyDisplay"
     static let ignoredBundleIDsKey = "ignoredBundleIDs"
+    static let cameraEnabledKey = "cameraEnabled"
+    static let cameraAwayDelayKey = "cameraAwayDelay"
 
     private let keychainService = "com.blurguard.app"
     private let requireAuthKeychainKey = "requireAuth"
@@ -18,8 +20,10 @@ final class SettingsManager {
         let defaults: [String: Any] = [
             SettingsManager.idleTimeoutKey: 30.0,
             SettingsManager.hotkeyKeyCodeKey: 37,    // L key
-            SettingsManager.hotkeyModifiersKey: 768, // ⌘⇧ (cmdKey=256 + shiftKey=512)
-            SettingsManager.hotkeyDisplayKey: "⌘⇧L",
+            SettingsManager.hotkeyModifiersKey: 768, // ⇧⌘ (shiftKey=512 + cmdKey=256)
+            SettingsManager.hotkeyDisplayKey: "⇧⌘L",
+            SettingsManager.cameraEnabledKey: true,
+            SettingsManager.cameraAwayDelayKey: 8,
             SettingsManager.ignoredBundleIDsKey: [
                 "us.zoom.xos",
                 "com.microsoft.teams",
@@ -58,7 +62,7 @@ final class SettingsManager {
     }
 
     var hotkeyDisplay: String {
-        get { UserDefaults.standard.string(forKey: Self.hotkeyDisplayKey) ?? "⌘⇧L" }
+        get { UserDefaults.standard.string(forKey: Self.hotkeyDisplayKey) ?? "⇧⌘L" }
         set { UserDefaults.standard.set(newValue, forKey: Self.hotkeyDisplayKey) }
     }
 
@@ -72,6 +76,21 @@ final class SettingsManager {
         set {
             UserDefaults.standard.set(Array(newValue), forKey: Self.ignoredBundleIDsKey)
         }
+    }
+
+    // MARK: - Camera (UserDefaults)
+
+    var cameraEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.cameraEnabledKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.cameraEnabledKey) }
+    }
+
+    var cameraAwayDelay: Int {
+        get {
+            let v = UserDefaults.standard.integer(forKey: Self.cameraAwayDelayKey)
+            return v == 0 ? 8 : v
+        }
+        set { UserDefaults.standard.set(newValue, forKey: Self.cameraAwayDelayKey) }
     }
 
     // MARK: - Require Auth (Keychain — tamper-resistant)

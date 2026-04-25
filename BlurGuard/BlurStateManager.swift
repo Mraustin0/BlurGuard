@@ -33,10 +33,11 @@ final class BlurStateManager: ObservableObject {
                 guard let self else { return }
                 if self.isEnabled {
                     self.startMonitoring()
+                    if self.settings.cameraEnabled { self.cameraMonitor.start() }
                 } else {
                     self.stopMonitoring()
-                    // FIX: also stop fallback polling when disabled via menu
                     self._stopFallbackPollingOnMain()
+                    self.cameraMonitor.stop()
                     DispatchQueue.main.async { self.removeAllOverlays() }
                     self.setState(.active)
                 }
@@ -45,8 +46,10 @@ final class BlurStateManager: ObservableObject {
     }
 
     private let idleMonitor = IdleMonitor()
+    private let cameraMonitor = CameraPresenceMonitor()
     private let settings = SettingsManager.shared
     private let unlockHandler = UnlockHandler()
+    private var settingsObserver: Any?
 
     private var countdownSeconds: Int = 10
     private var countdownTimer: Timer?
@@ -60,16 +63,23 @@ final class BlurStateManager: ObservableObject {
 
     private init() {
         sharedManagerRef = self
+        setupCameraCallbacks()
+        if settings.cameraEnabled { cameraMonitor.start() }
         startMonitoring()
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.updateCameraMonitoring() }
     }
 
     deinit {
         sharedManagerRef = nil
+        if let obs = settingsObserver { NotificationCenter.default.removeObserver(obs) }
     }
 
     func shutdown() {
-        // FIX: avoid deadlock — don't stateQueue.sync from main thread.
-        // Instead run cleanup async and let the run loop drain naturally.
+        cameraMonitor.stop()
         stateQueue.async { [weak self] in
             guard let self else { return }
             self.stopMonitoring()
@@ -77,6 +87,32 @@ final class BlurStateManager: ObservableObject {
         }
         _stopFallbackPollingOnMain()
         DispatchQueue.main.async { self.removeAllOverlays() }
+    }
+
+    // MARK: - Camera monitoring
+
+    private func setupCameraCallbacks() {
+        cameraMonitor.onPeekDetected = { [weak self] in
+            self?.stateQueue.async { self?.triggerFromCamera() }
+        }
+        cameraMonitor.onUserAway = { [weak self] in
+            self?.stateQueue.async { self?.triggerFromCamera() }
+        }
+    }
+
+    private func triggerFromCamera() {
+        guard isEnabled, !queuePaused else { return }
+        guard queueState == .active || queueState == .countdown else { return }
+        stopMonitoring()
+        transitionTo(.blurred)
+    }
+
+    private func updateCameraMonitoring() {
+        if settings.cameraEnabled && isEnabled && !isPaused {
+            cameraMonitor.start()
+        } else {
+            cameraMonitor.stop()
+        }
     }
 
     // MARK: - Public control
@@ -91,6 +127,7 @@ final class BlurStateManager: ObservableObject {
     }
 
     func pause(for duration: TimeInterval?) {
+        cameraMonitor.stop()
         stateQueue.async { [weak self] in
             guard let self else { return }
             self.queuePaused = true
@@ -120,6 +157,7 @@ final class BlurStateManager: ObservableObject {
             self.queuePaused = false
             if self.isEnabled { self.startMonitoring() }
         }
+        if settings.cameraEnabled && isEnabled { cameraMonitor.start() }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.isPaused = false
