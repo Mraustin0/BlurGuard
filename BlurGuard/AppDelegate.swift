@@ -6,7 +6,7 @@ import SwiftUI
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var stateManager: BlurStateManager!
-    private var settingsWindow: NSWindow?
+    private var settingsPopover: NSPopover?
     private var cancellables = Set<AnyCancellable>()
 
     static func main() {
@@ -160,27 +160,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func resumeProtection() { stateManager.resume() }
 
     @objc private func openSettings() {
-        if settingsWindow == nil {
-            let hostingController = NSHostingController(rootView: SettingsView())
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 450, height: 460),
-                styleMask: [.titled, .closable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "BlurGuard Settings"
-            window.contentViewController = hostingController
-            window.center()
-            window.isReleasedWhenClosed = false
-            window.delegate = self
-            settingsWindow = window
+        if settingsPopover == nil {
+            let vc = NSHostingController(rootView: SettingsView())
+            vc.view.appearance = NSAppearance(named: .darkAqua)
+            let p = NSPopover()
+            p.contentViewController = vc
+            p.contentSize = NSSize(width: 300, height: 490)
+            p.behavior = .semitransient
+            p.animates = true
+            settingsPopover = p
         }
-        // Defer to next run loop so the status-bar menu is fully closed first.
-        // Activate before makeKeyAndOrderFront — required on macOS 14+ for accessory apps.
+        // Defer so menu finishes closing before popover appears.
         DispatchQueue.main.async { [weak self] in
-            guard let window = self?.settingsWindow else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
+            guard let self, let button = self.statusItem.button else { return }
+            if self.settingsPopover?.isShown == true {
+                self.settingsPopover?.performClose(nil)
+            } else {
+                self.settingsPopover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            }
         }
     }
 
@@ -214,12 +211,3 @@ extension AppDelegate: NSMenuDelegate {
     }
 }
 
-// MARK: - NSWindowDelegate
-
-extension AppDelegate: NSWindowDelegate {
-    func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, window === settingsWindow {
-            settingsWindow = nil
-        }
-    }
-}
