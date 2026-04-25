@@ -5,8 +5,7 @@ import SwiftUI
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var stateManager: BlurStateManager!
-    private var settingsWindow: NSWindow?
+    private var settingsPopover: NSPopover?
     private var cancellables = Set<AnyCancellable>()
 
     static func main() {
@@ -18,213 +17,80 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        stateManager = BlurStateManager.shared
-
-        setupMenuBar()
+        setupStatusItem()
         setupHotkey()
 
-        stateManager.$currentState
+        BlurStateManager.shared.$currentState
             .receive(on: RunLoop.main)
-            .sink { [weak self] state in self?.updateMenuBarIcon() }
+            .sink { [weak self] _ in self?.updateIcon() }
             .store(in: &cancellables)
 
-        stateManager.$isEnabled
+        BlurStateManager.shared.$isPaused
             .receive(on: RunLoop.main)
-            .sink { [weak self] enabled in
-                self?.statusItem.menu?.item(withTag: 1)?.state = enabled ? .on : .off
-            }
+            .sink { [weak self] _ in self?.updateIcon() }
             .store(in: &cancellables)
 
-        stateManager.$isPaused
+        BlurStateManager.shared.$isEnabled
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateMenuBarIcon() }
+            .sink { [weak self] _ in self?.updateIcon() }
             .store(in: &cancellables)
+    }
+
+    // MARK: - Status item
+
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "BlurGuard")
+            button.action = #selector(togglePanel)
+            button.target = self
+        }
+    }
+
+    private func updateIcon() {
+        guard let button = statusItem.button else { return }
+        let s = BlurStateManager.shared
+        if s.isPaused {
+            button.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "BlurGuard")
+            return
+        }
+        let name: String
+        switch s.currentState {
+        case .active:    name = s.isEnabled ? "lock.shield"      : "lock.slash"
+        case .countdown: name = "lock.shield.fill"
+        case .blurred:   name = "lock.shield.fill"
+        case .unlocking: name = "lock.open"
+        }
+        button.image = NSImage(systemSymbolName: name, accessibilityDescription: "BlurGuard")
+    }
+
+    // MARK: - Panel
+
+    @objc private func togglePanel() {
+        if settingsPopover == nil {
+            let vc = NSHostingController(rootView: SettingsView())
+            vc.view.wantsLayer = true
+            vc.view.layer?.backgroundColor = CGColor.clear
+            let p = NSPopover()
+            p.contentViewController = vc
+            p.contentSize = NSSize(width: 300, height: 480)
+            p.behavior = .transient
+            p.animates = true
+            settingsPopover = p
+        }
+        guard let button = statusItem.button else { return }
+        if settingsPopover?.isShown == true {
+            settingsPopover?.performClose(nil)
+        } else {
+            settingsPopover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
     }
 
     // MARK: - Hotkey
 
     private func setupHotkey() {
         let s = SettingsManager.shared
-        HotkeyManager.shared.update(
-            keyCode: UInt32(s.hotkeyKeyCode),
-            carbonModifiers: UInt32(s.hotkeyModifiers)
-        )
-        HotkeyManager.shared.onTrigger = { [weak self] in
-            self?.stateManager.triggerInstantBlur()
-        }
-    }
-
-    // MARK: - Menu Bar
-
-    private func setupMenuBar() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "BlurGuard")
-        }
-
-        let menu = NSMenu()
-        menu.delegate = self
-
-        // Tag 1: Enabled toggle
-        let toggleItem = NSMenuItem(title: "Enabled", action: #selector(toggleEnabled(_:)), keyEquivalent: "")
-        toggleItem.target = self
-        toggleItem.state = stateManager.isEnabled ? .on : .off
-        toggleItem.tag = 1
-        menu.addItem(toggleItem)
-
-        menu.addItem(.separator())
-
-        // Tag 2: Instant Lock
-        let lockItem = NSMenuItem(title: "Instant Lock  \(SettingsManager.shared.hotkeyDisplay)",
-                                  action: #selector(instantLock), keyEquivalent: "")
-        lockItem.target = self
-        lockItem.tag = 2
-        menu.addItem(lockItem)
-
-        menu.addItem(.separator())
-
-        // Tag 3: Pause submenu (hidden when paused)
-        let pauseItem = NSMenuItem(title: "Pause Protection", action: nil, keyEquivalent: "")
-        pauseItem.tag = 3
-        let pauseMenu = NSMenu()
-        let p1 = NSMenuItem(title: "For 1 Hour", action: #selector(pauseFor1Hour), keyEquivalent: "")
-        p1.target = self
-        let p2 = NSMenuItem(title: "For 2 Hours", action: #selector(pauseFor2Hours), keyEquivalent: "")
-        p2.target = self
-        let pIndef = NSMenuItem(title: "Until Manually Resumed", action: #selector(pauseIndefinitely), keyEquivalent: "")
-        pIndef.target = self
-        pauseMenu.addItem(p1)
-        pauseMenu.addItem(p2)
-        pauseMenu.addItem(pIndef)
-        pauseItem.submenu = pauseMenu
-        menu.addItem(pauseItem)
-
-        // Tag 4: Paused status label (visible when paused, disabled)
-        let pausedLabel = NSMenuItem(title: "Paused", action: nil, keyEquivalent: "")
-        pausedLabel.tag = 4
-        pausedLabel.isEnabled = false
-        pausedLabel.isHidden = true
-        menu.addItem(pausedLabel)
-
-        // Tag 5: Resume (visible when paused)
-        let resumeItem = NSMenuItem(title: "Resume Protection", action: #selector(resumeProtection), keyEquivalent: "")
-        resumeItem.target = self
-        resumeItem.tag = 5
-        resumeItem.isHidden = true
-        menu.addItem(resumeItem)
-
-        menu.addItem(.separator())
-
-        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        menu.addItem(.separator())
-
-        let quitItem = NSMenuItem(title: "Quit BlurGuard", action: #selector(quitApp), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
-
-        statusItem.menu = menu
-    }
-
-    private func updateMenuBarIcon() {
-        guard let button = statusItem.button else { return }
-        if stateManager.isPaused {
-            button.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "BlurGuard Paused")
-            return
-        }
-        let iconName: String
-        switch stateManager.currentState {
-        case .active:    iconName = "lock.shield"
-        case .countdown: iconName = "lock.shield.fill"
-        case .blurred:   iconName = "lock.shield.fill"
-        case .unlocking: iconName = "lock.open"
-        }
-        button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: "BlurGuard")
-    }
-
-    // MARK: - Actions
-
-    @objc private func toggleEnabled(_ sender: NSMenuItem) {
-        stateManager.isEnabled.toggle()
-    }
-
-    @objc private func instantLock() {
-        stateManager.triggerInstantBlur()
-    }
-
-    @objc private func pauseFor1Hour()    { stateManager.pause(for: 3600) }
-    @objc private func pauseFor2Hours()   { stateManager.pause(for: 7200) }
-    @objc private func pauseIndefinitely() { stateManager.pause(for: nil) }
-    @objc private func resumeProtection() { stateManager.resume() }
-
-    @objc private func openSettings() {
-        if settingsWindow == nil {
-            let vc = NSHostingController(rootView: SettingsView())
-            vc.view.appearance = NSAppearance(named: .darkAqua)
-
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 380, height: 580),
-                styleMask: [.titled, .closable, .fullSizeContentView],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "BlurGuard"
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.isMovableByWindowBackground = true
-            window.contentViewController = vc
-            window.center()
-            window.isReleasedWhenClosed = false
-            window.appearance = NSAppearance(named: .darkAqua)
-            window.backgroundColor = NSColor(red: 0.10, green: 0.12, blue: 0.20, alpha: 1)
-            window.delegate = self
-            settingsWindow = window
-        }
-        DispatchQueue.main.async { [weak self] in
-            guard let window = self?.settingsWindow else { return }
-            NSApp.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
-        }
-    }
-
-    @objc private func quitApp() {
-        stateManager.shutdown()
-        NSApp.terminate(nil)
-    }
-}
-
-// MARK: - NSMenuDelegate
-
-extension AppDelegate: NSMenuDelegate {
-    func menuWillOpen(_ menu: NSMenu) {
-        guard menu === statusItem.menu else { return }
-        let paused = stateManager.isPaused
-        menu.item(withTag: 3)?.isHidden = paused
-        menu.item(withTag: 4)?.isHidden = !paused
-        menu.item(withTag: 5)?.isHidden = !paused
-
-        // Update "Instant Lock" hotkey label if user changed it
-        menu.item(withTag: 2)?.title = "Instant Lock  \(SettingsManager.shared.hotkeyDisplay)"
-
-        if paused {
-            var label = "Paused"
-            if let end = stateManager.pauseEndDate, end.timeIntervalSinceNow > 0 {
-                let mins = Int(ceil(end.timeIntervalSinceNow / 60))
-                label = "Paused — \(mins)m remaining"
-            }
-            menu.item(withTag: 4)?.title = label
-        }
-    }
-}
-
-// MARK: - NSWindowDelegate
-
-extension AppDelegate: NSWindowDelegate {
-    func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow, window === settingsWindow {
-            settingsWindow = nil
-        }
+        HotkeyManager.shared.update(keyCode: UInt32(s.hotkeyKeyCode), carbonModifiers: UInt32(s.hotkeyModifiers))
+        HotkeyManager.shared.onTrigger = { BlurStateManager.shared.triggerInstantBlur() }
     }
 }
