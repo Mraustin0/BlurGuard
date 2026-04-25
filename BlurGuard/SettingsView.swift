@@ -156,8 +156,8 @@ struct SettingsView: View {
             glDivider
             footerRow
         }
-        .frame(width: 300)
-        .background(Color.clear)
+        .frame(width: 380, height: 580)
+        .background(Color(red: 0.10, green: 0.12, blue: 0.20))
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showAppPicker) {
             AppPickerView(existingIDs: Set(ignoredApps.map(\.bundleID))) { addApp($0) }
