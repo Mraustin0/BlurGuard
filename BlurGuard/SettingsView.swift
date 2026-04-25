@@ -14,30 +14,78 @@ struct GlassBackground: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
+// MARK: - Live header (isolated so only it re-renders on state changes)
+
+private struct LiveHeader: View {
+    @ObservedObject private var state = BlurStateManager.shared
+    @AppStorage(SettingsManager.cameraEnabledKey) private var cameraEnabled: Bool = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(state.isEnabled
+                      ? (cameraEnabled ? Color.green : Color.blue)
+                      : Color(white: 0.4))
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("BlurGuard")
+                    .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                Text("Monitoring · \(state.peekCount) peek\(state.peekCount == 1 ? "" : "s") today")
+                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+            }
+            Spacer()
+            Button { BlurStateManager.shared.triggerInstantBlur() } label: {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 13)).foregroundColor(.white.opacity(0.55))
+            }
+            .buttonStyle(.plain).help("Instant Lock")
+
+            Toggle("", isOn: Binding(
+                get: { state.isEnabled },
+                set: { state.isEnabled = $0 }
+            ))
+            .labelsHidden().scaleEffect(0.8)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+    }
+}
+
+// MARK: - Live today count (isolated)
+
+private struct LiveTodayRow: View {
+    @ObservedObject private var state = BlurStateManager.shared
+    var body: some View {
+        HStack {
+            Text("\(state.peekCount) peek\(state.peekCount == 1 ? "" : "s")")
+                .font(.system(size: 15, weight: .medium)).foregroundColor(.white)
+            Spacer()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9).padding(.bottom, 4)
+    }
+}
+
 // MARK: - Settings View
 
 struct SettingsView: View {
-    @ObservedObject private var state = BlurStateManager.shared
-
-    @AppStorage(SettingsManager.cameraEnabledKey)    private var cameraEnabled: Bool   = false
-    @AppStorage(SettingsManager.cameraAwayDelayKey)  private var cameraAwayDelay: Int  = 8
-    @AppStorage(SettingsManager.cameraSensitivityKey) private var sensitivity: Double  = 0.6
-    @AppStorage(SettingsManager.idleTimeoutKey)      private var idleTimeout: Double   = 30.0
-    @AppStorage(SettingsManager.peekResponseKey)     private var peekResponse: String  = "blur"
-    @AppStorage(SettingsManager.awayResponseKey)     private var awayResponse: String  = "blur"
-    @State private var requireAuth    = SettingsManager.shared.requireAuth
-    @State private var hotkeyDisplay  = SettingsManager.shared.hotkeyDisplay
+    @AppStorage(SettingsManager.cameraEnabledKey)     private var cameraEnabled: Bool   = false
+    @AppStorage(SettingsManager.cameraAwayDelayKey)   private var cameraAwayDelay: Int  = 8
+    @AppStorage(SettingsManager.cameraSensitivityKey) private var sensitivity: Double   = 0.6
+    @AppStorage(SettingsManager.idleTimeoutKey)       private var idleTimeout: Double   = 30.0
+    @AppStorage(SettingsManager.peekResponseKey)      private var peekResponse: String  = "blur"
+    @AppStorage(SettingsManager.awayResponseKey)      private var awayResponse: String  = "blur"
+    @State private var requireAuth       = SettingsManager.shared.requireAuth
+    @State private var hotkeyDisplay     = SettingsManager.shared.hotkeyDisplay
     @State private var isRecordingHotkey = false
     @State private var keyMonitor: Any?
     @State private var ignoredApps: [IgnoredApp] = Self.loadIgnoredApps()
-    @State private var showAppPicker  = false
+    @State private var showAppPicker     = false
 
     var body: some View {
         ZStack {
             GlassBackground().ignoresSafeArea()
 
             VStack(spacing: 0) {
-                headerRow
+                LiveHeader()
                 divider
 
                 ScrollView(.vertical, showsIndicators: false) {
@@ -55,10 +103,14 @@ struct SettingsView: View {
                         // DETECTION
                         sectionLabel("Detection")
                         VStack(spacing: 0) {
-                            HStack { Text("Sensitivity").glText(); Spacer() }
-                                .padding(.horizontal, 16).padding(.top, 2)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack { Text("Camera Sensitivity").glText(); Spacer() }
+                                Text("Higher = triggers more easily from further away")
+                                    .font(.system(size: 10)).foregroundColor(.white.opacity(0.35))
+                            }
+                            .padding(.horizontal, 14).padding(.top, 4)
                             Slider(value: $sensitivity, in: 0...1)
-                                .padding(.horizontal, 16).padding(.bottom, 6)
+                                .padding(.horizontal, 14).padding(.bottom, 6)
                                 .onChange(of: sensitivity) { SettingsManager.shared.cameraSensitivity = $0 }
 
                             insetDivider
@@ -128,12 +180,7 @@ struct SettingsView: View {
 
                         // TODAY
                         sectionLabel("Today")
-                        row {
-                            Text("\(state.peekCount) peek\(state.peekCount == 1 ? "" : "s")")
-                                .font(.system(size: 15, weight: .medium)).foregroundColor(.white)
-                            Spacer()
-                        }
-                        .padding(.bottom, 4)
+                        LiveTodayRow()
                     }
                 }
 
@@ -147,41 +194,6 @@ struct SettingsView: View {
         .sheet(isPresented: $showAppPicker) {
             AppPickerView(existingIDs: Set(ignoredApps.map(\.bundleID))) { addApp($0) }
         }
-    }
-
-    // MARK: - Header
-
-    private var headerRow: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(state.isEnabled ? (cameraEnabled ? Color.green : Color.blue) : Color(white: 0.4))
-                .frame(width: 8, height: 8)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("BlurGuard")
-                    .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                Text("Monitoring · \(state.peekCount) peek\(state.peekCount == 1 ? "" : "s") today")
-                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
-            }
-            Spacer()
-            // Instant lock button
-            Button {
-                BlurStateManager.shared.triggerInstantBlur()
-            } label: {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 13)).foregroundColor(.white.opacity(0.55))
-            }
-            .buttonStyle(.plain)
-            .help("Instant Lock")
-
-            // Enabled toggle
-            Toggle("", isOn: Binding(
-                get: { state.isEnabled },
-                set: { state.isEnabled = $0 }
-            ))
-            .labelsHidden()
-            .scaleEffect(0.8)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
     }
 
     // MARK: - Pill row
