@@ -341,13 +341,13 @@ final class BlurStateManager: ObservableObject {
                     manager.transitionTo(.unlocking)
                 }
             }
-            return nil
+            return Unmanaged.passRetained(event)
         }
 
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
-            options: .defaultTap,
+            options: .listenOnly,
             eventsOfInterest: eventMask,
             callback: callback,
             userInfo: nil
@@ -427,11 +427,22 @@ final class BlurStateManager: ObservableObject {
 
         for window in blurWindows { window.passThrough(true) }
 
+        // Bring app forward so the LA dialog (Touch ID / password) is visible.
+        NSApp.activate(ignoringOtherApps: true)
+
         let needsAuth: Bool
         switch lastBlurReason {
         case .cameraPeek: needsAuth = settings.peekResponse == "lock"
         case .cameraAway: needsAuth = settings.awayResponse == "lock"
         case .idle, .manual: needsAuth = settings.requireAuth
+        }
+
+        // Safety: if the completion is never called (e.g. LAContext hangs), reset after 30s.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, self.isAuthenticating else { return }
+            self.isAuthenticating = false
+            for window in self.blurWindows { window.passThrough(false) }
+            self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
         }
 
         unlockHandler.authenticate(requireAuth: needsAuth) { [weak self] result in
