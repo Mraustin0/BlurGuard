@@ -279,11 +279,6 @@ struct SettingsView: View {
             .padding(.horizontal, 14).padding(.vertical, 9)
     }
 
-    private func glIcon(_ name: String) -> some View {
-        Image(systemName: name).font(.system(size: 12))
-            .foregroundColor(.white.opacity(0.5)).frame(width: 16)
-    }
-
     // MARK: - Hotkey recording
 
     private func startRecording() {

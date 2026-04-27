@@ -24,7 +24,7 @@ final class BlurStateManager: ObservableObject {
     private let stateQueue = DispatchQueue(label: "com.blurguard.state", qos: .userInteractive)
 
     @Published private(set) var currentState: BlurState = .active
-    @Published private(set) var peekCount: Int = 0
+    @Published private(set) var peekCount: Int = UserDefaults.standard.integer(forKey: "peekCountToday")
     private(set) var lastBlurReason: BlurReason = .idle
     // Shadow var — only read/written on stateQueue to avoid data races with @Published writes on main.
     private var queueState: BlurState = .active
@@ -109,9 +109,16 @@ final class BlurStateManager: ObservableObject {
     private func triggerFromCamera(reason: BlurReason) {
         guard isEnabled, !queuePaused else { return }
         guard queueState == .active || queueState == .countdown else { return }
+        if !settings.ignoredBundleIDs.isEmpty {
+            let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+            if !settings.ignoredBundleIDs.isDisjoint(with: running) { return }
+        }
         lastBlurReason = reason
         if reason == .cameraPeek {
-            DispatchQueue.main.async { self.peekCount += 1 }
+            DispatchQueue.main.async {
+                self.peekCount += 1
+                UserDefaults.standard.set(self.peekCount, forKey: "peekCountToday")
+            }
         }
         stopMonitoring()
         transitionTo(.blurred)
