@@ -4,58 +4,48 @@ import Security
 final class SettingsManager {
     static let shared = SettingsManager()
 
-    static let idleTimeoutKey = "idleTimeout"
-    static let requireAuthKey = "requireAuth"
-    static let hotkeyKeyCodeKey = "hotkeyKeyCode"
-    static let hotkeyModifiersKey = "hotkeyModifiers"
-    static let hotkeyDisplayKey = "hotkeyDisplay"
-    static let ignoredBundleIDsKey = "ignoredBundleIDs"
-    static let cameraEnabledKey = "cameraEnabled"
-    static let cameraAwayDelayKey = "cameraAwayDelay"
-    static let cameraSensitivityKey = "cameraSensitivity"
-    static let peekResponseKey = "peekResponse"
-    static let awayResponseKey = "awayResponse"
+    // MARK: - UserDefaults keys
 
-    private let keychainService = "com.blurguard.app"
-    private let requireAuthKeychainKey = "requireAuth"
+    static let idleTimeoutKey       = "idleTimeout"
+    static let hotkeyKeyCodeKey     = "hotkeyKeyCode"
+    static let hotkeyModifiersKey   = "hotkeyModifiers"
+    static let hotkeyDisplayKey     = "hotkeyDisplay"
+    static let ignoredBundleIDsKey  = "ignoredBundleIDs"
+    static let cameraEnabledKey     = "cameraEnabled"
+    static let cameraAwayDelayKey   = "cameraAwayDelay"
+    static let cameraSensitivityKey = "cameraSensitivity"
+    static let peekResponseKey      = "peekResponse"
+    static let awayResponseKey      = "awayResponse"
 
     private init() {
-        let defaults: [String: Any] = [
-            SettingsManager.idleTimeoutKey: 30.0,
-            SettingsManager.hotkeyKeyCodeKey: 37,    // L key
-            SettingsManager.hotkeyModifiersKey: 768, // ⇧⌘ (shiftKey=512 + cmdKey=256)
-            SettingsManager.hotkeyDisplayKey: "⇧⌘L",
-            SettingsManager.cameraEnabledKey: false,
-            SettingsManager.cameraAwayDelayKey: 8,
-            SettingsManager.cameraSensitivityKey: 0.6,
-            SettingsManager.peekResponseKey: "blur",
-            SettingsManager.awayResponseKey: "blur",
-            SettingsManager.ignoredBundleIDsKey: [
+        UserDefaults.standard.register(defaults: [
+            Self.idleTimeoutKey:       30.0,
+            Self.hotkeyKeyCodeKey:     37,       // L key
+            Self.hotkeyModifiersKey:   768,      // ⇧⌘ (shift=512 + cmd=256)
+            Self.hotkeyDisplayKey:     "⇧⌘L",
+            Self.cameraEnabledKey:     false,
+            Self.cameraAwayDelayKey:   8,
+            Self.cameraSensitivityKey: 0.6,
+            Self.peekResponseKey:      "blur",
+            Self.awayResponseKey:      "blur",
+            Self.ignoredBundleIDsKey:  [
                 "us.zoom.xos",
                 "com.microsoft.teams",
                 "com.microsoft.teams2",
                 "com.cisco.webexmeetings",
                 "com.apple.FaceTime",
             ],
-        ]
-        UserDefaults.standard.register(defaults: defaults)
+        ])
     }
 
-    // MARK: - Idle Timeout (UserDefaults with range validation)
+    // MARK: - Idle timeout (10 s – 10 min)
 
     var idleTimeout: TimeInterval {
-        get {
-            let raw = UserDefaults.standard.double(forKey: SettingsManager.idleTimeoutKey)
-            // Clamp to valid range: 10s – 10min
-            return min(max(raw, 10), 600)
-        }
-        set {
-            let clamped = min(max(newValue, 10), 600)
-            UserDefaults.standard.set(clamped, forKey: SettingsManager.idleTimeoutKey)
-        }
+        get { min(max(UserDefaults.standard.double(forKey: Self.idleTimeoutKey), 10), 600) }
+        set { UserDefaults.standard.set(min(max(newValue, 10), 600), forKey: Self.idleTimeoutKey) }
     }
 
-    // MARK: - Hotkey (UserDefaults)
+    // MARK: - Hotkey
 
     var hotkeyKeyCode: Int {
         get { UserDefaults.standard.integer(forKey: Self.hotkeyKeyCodeKey) }
@@ -72,19 +62,7 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: Self.hotkeyDisplayKey) }
     }
 
-    // MARK: - Ignored Bundle IDs (UserDefaults)
-
-    var ignoredBundleIDs: Set<String> {
-        get {
-            let arr = (UserDefaults.standard.array(forKey: Self.ignoredBundleIDsKey) as? [String]) ?? []
-            return Set(arr)
-        }
-        set {
-            UserDefaults.standard.set(Array(newValue), forKey: Self.ignoredBundleIDsKey)
-        }
-    }
-
-    // MARK: - Camera (UserDefaults)
+    // MARK: - Camera
 
     var cameraEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: Self.cameraEnabledKey) }
@@ -107,6 +85,8 @@ final class SettingsManager {
         set { UserDefaults.standard.set(min(max(newValue, 0), 1), forKey: Self.cameraSensitivityKey) }
     }
 
+    // MARK: - Response actions ("blur" or "lock")
+
     var peekResponse: String {
         get { UserDefaults.standard.string(forKey: Self.peekResponseKey) ?? "blur" }
         set { UserDefaults.standard.set(newValue, forKey: Self.peekResponseKey) }
@@ -117,27 +97,42 @@ final class SettingsManager {
         set { UserDefaults.standard.set(newValue, forKey: Self.awayResponseKey) }
     }
 
-    // MARK: - Require Auth (Keychain — tamper-resistant)
+    // MARK: - Ignored bundle IDs
+
+    var ignoredBundleIDs: Set<String> {
+        get {
+            let stored = UserDefaults.standard.array(forKey: Self.ignoredBundleIDsKey) as? [String] ?? []
+            return Set(stored)
+        }
+        set { UserDefaults.standard.set(Array(newValue), forKey: Self.ignoredBundleIDsKey) }
+    }
+
+    // MARK: - Require authentication (Keychain)
+    // Stored in the Keychain rather than UserDefaults so it can't be trivially
+    // toggled by editing a plist file. kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+    // prevents it from being copied to another device via backup or migration.
+
+    private let keychainService = "com.blurguard.app"
+    private let keychainAccount = "requireAuth"
 
     var requireAuth: Bool {
-        get { keychainRead() ?? true }   // default to true if missing
+        get { keychainRead() ?? true }
         set { keychainWrite(newValue) }
     }
 
     private func keychainWrite(_ value: Bool) {
-        let data = Data([value ? 1 : 0])
+        let data  = Data([value ? 1 : 0])
         let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
+            kSecClass:       kSecClassGenericPassword,
             kSecAttrService: keychainService,
-            kSecAttrAccount: requireAuthKeychainKey,
+            kSecAttrAccount: keychainAccount,
         ]
-        // ThisDeviceOnly: prevents backup/migration to another device
-        let attributes: [CFString: Any] = [
-            kSecValueData: data,
+        let attrs: [CFString: Any] = [
+            kSecValueData:      data,
             kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
 
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        let updateStatus = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData] = data
@@ -152,11 +147,11 @@ final class SettingsManager {
 
     private func keychainRead() -> Bool? {
         let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: keychainService,
-            kSecAttrAccount: requireAuthKeychainKey,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne,
+            kSecClass:        kSecClassGenericPassword,
+            kSecAttrService:  keychainService,
+            kSecAttrAccount:  keychainAccount,
+            kSecReturnData:   true,
+            kSecMatchLimit:   kSecMatchLimitOne,
         ]
         var result: AnyObject?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,

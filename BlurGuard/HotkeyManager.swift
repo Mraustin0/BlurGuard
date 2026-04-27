@@ -7,53 +7,68 @@ final class HotkeyManager {
 
     private var monitor: Any?
 
+    // MARK: - Carbon modifier bit-masks
+    // Can't replace with OptionSet — CGEventFlags and NSEvent.ModifierFlags use
+    // different bit layouts, so we keep explicit Carbon values for storage
+    // and convert to NSEvent flags only when comparing live events.
+    private enum CarbonMod {
+        static let command: UInt32 = 256
+        static let shift:   UInt32 = 512
+        static let option:  UInt32 = 2048
+        static let control: UInt32 = 4096
+    }
+
     private init() {
-        registerCurrentHotkey()
+        reregister()
     }
 
     func update(keyCode: UInt32, carbonModifiers: UInt32) {
-        // carbonModifiers stored for compatibility; we compare using NSEvent.ModifierFlags
-        registerCurrentHotkey()
+        reregister()
     }
 
-    private func registerCurrentHotkey() {
-        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
-        let kc = SettingsManager.shared.hotkeyKeyCode
-        let mods = nsModifiers(fromCarbon: SettingsManager.shared.hotkeyModifiers)
+    private func reregister() {
+        if let existing = monitor {
+            NSEvent.removeMonitor(existing)
+            monitor = nil
+        }
+
+        let targetKeyCode  = SettingsManager.shared.hotkeyKeyCode
+        let targetMods     = nsModifiers(fromCarbon: SettingsManager.shared.hotkeyModifiers)
+
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Int(event.keyCode) == kc else { return }
-            let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-            guard flags == mods else { return }
+            guard Int(event.keyCode) == targetKeyCode else { return }
+            let pressed = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            guard pressed == targetMods else { return }
             self?.onTrigger?()
         }
     }
 
-    // MARK: - Helpers
+    // MARK: - Modifier conversion helpers
 
     static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
-        var m: UInt32 = 0
-        if flags.contains(.command) { m |= 256 }  // cmdKey
-        if flags.contains(.shift)   { m |= 512 }  // shiftKey
-        if flags.contains(.option)  { m |= 2048 } // optionKey
-        if flags.contains(.control) { m |= 4096 } // controlKey
-        return m
+        var result: UInt32 = 0
+        if flags.contains(.command) { result |= CarbonMod.command }
+        if flags.contains(.shift)   { result |= CarbonMod.shift   }
+        if flags.contains(.option)  { result |= CarbonMod.option  }
+        if flags.contains(.control) { result |= CarbonMod.control }
+        return result
     }
 
     static func displayString(carbonModifiers: UInt32, character: String) -> String {
-        var s = ""
-        if carbonModifiers & 4096 != 0 { s += "⌃" }
-        if carbonModifiers & 2048 != 0 { s += "⌥" }
-        if carbonModifiers & 512  != 0 { s += "⇧" }
-        if carbonModifiers & 256  != 0 { s += "⌘" }
-        return s + character.uppercased()
+        var symbols = ""
+        if carbonModifiers & CarbonMod.control != 0 { symbols += "⌃" }
+        if carbonModifiers & CarbonMod.option  != 0 { symbols += "⌥" }
+        if carbonModifiers & CarbonMod.shift   != 0 { symbols += "⇧" }
+        if carbonModifiers & CarbonMod.command != 0 { symbols += "⌘" }
+        return symbols + character.uppercased()
     }
 
     private func nsModifiers(fromCarbon carbon: Int) -> NSEvent.ModifierFlags {
         var flags: NSEvent.ModifierFlags = []
-        if carbon & 256  != 0 { flags.insert(.command) }
-        if carbon & 512  != 0 { flags.insert(.shift) }
-        if carbon & 2048 != 0 { flags.insert(.option) }
-        if carbon & 4096 != 0 { flags.insert(.control) }
+        if carbon & Int(CarbonMod.command) != 0 { flags.insert(.command) }
+        if carbon & Int(CarbonMod.shift)   != 0 { flags.insert(.shift)   }
+        if carbon & Int(CarbonMod.option)  != 0 { flags.insert(.option)  }
+        if carbon & Int(CarbonMod.control) != 0 { flags.insert(.control) }
         return flags
     }
 }

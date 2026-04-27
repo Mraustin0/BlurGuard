@@ -2,81 +2,75 @@ import Cocoa
 import Combine
 import CoreGraphics
 
-enum BlurState: String {
-    case active
-    case countdown
-    case blurred
-    case unlocking
+// MARK: - Types
+
+enum BlurState {
+    case active, countdown, blurred, unlocking
 }
 
 enum BlurReason {
     case idle, cameraAway, cameraPeek, manual
 }
 
-// Weak global for CGEventTap C callback — avoids raw unmanaged pointer.
-// Access only inside the callback; do NOT store strong ref from here.
+// MARK: - BlurStateManager
+
+// CGEventTap callbacks are plain C functions and can't capture Swift objects.
+// We route back into the manager through this weak global instead of an
+// unsafe unmanaged pointer.
 private weak var sharedManagerRef: BlurStateManager?
 
 final class BlurStateManager: ObservableObject {
+
     static let shared = BlurStateManager()
 
-    // Serial queue — all state mutations run here.
-    private let stateQueue = DispatchQueue(label: "com.blurguard.state", qos: .userInteractive)
+    // MARK: - Published state (main thread)
 
     @Published private(set) var currentState: BlurState = .active
-    @Published private(set) var peekCount: Int = UserDefaults.standard.integer(forKey: "peekCountToday")
-    private(set) var lastBlurReason: BlurReason = .idle
-    // Shadow var — only read/written on stateQueue to avoid data races with @Published writes on main.
-    private var queueState: BlurState = .active
-    private var queuePaused = false              // stateQueue only
-    @Published private(set) var isPaused = false       // main thread
-    @Published private(set) var pauseEndDate: Date? = nil  // main thread
-    private var pauseTimer: Timer?             // main thread
+    @Published private(set) var isPaused:     Bool      = false
+    @Published private(set) var pauseEndDate: Date?     = nil
+    @Published private(set) var peekCount:    Int       = UserDefaults.standard.integer(forKey: "peekCountToday")
 
     @Published var isEnabled: Bool = true {
-        didSet {
-            stateQueue.async { [weak self] in
-                guard let self else { return }
-                if self.isEnabled {
-                    self.startMonitoring()
-                    if self.settings.cameraEnabled { self.cameraMonitor.start() }
-                } else {
-                    self.stopMonitoring()
-                    self._stopFallbackPollingOnMain()
-                    self.cameraMonitor.stop()
-                    DispatchQueue.main.async { self.removeAllOverlays() }
-                    self.setState(.active)
-                }
-            }
-        }
+        didSet { isEnabled ? enableProtection() : disableProtection() }
     }
 
-    private let idleMonitor = IdleMonitor()
-    private let cameraMonitor = CameraPresenceMonitor()
-    private let settings = SettingsManager.shared
-    private let unlockHandler = UnlockHandler()
-    private var settingsObserver: Any?
+    // MARK: - Private state
 
-    private var countdownSeconds: Int = 10
+    // All BlurState mutations run on stateQueue to avoid data races.
+    // @Published vars above are written via DispatchQueue.main.async.
+    private let stateQueue = DispatchQueue(label: "com.blurguard.state", qos: .userInteractive)
+    private var queueState:  BlurState = .active  // stateQueue only
+    private var queuePaused: Bool      = false     // stateQueue only
+
+    private var lastBlurReason: BlurReason = .idle
+
+    private let idleMonitor    = IdleMonitor()
+    private let cameraMonitor  = CameraPresenceMonitor()
+    private let settings       = SettingsManager.shared
+    private let unlockHandler  = UnlockHandler()
+
+    private var pauseTimer:    Timer?
     private var countdownTimer: Timer?
     private var countdownOverlay: CountdownOverlay?
-    private var blurWindows: [BlurOverlayWindow] = []
-    private var eventTap: CFMachPort?
+    private var countdownSeconds = 10
+
+    private var blurWindows:   [BlurOverlayWindow] = []
+    private var eventTap:      CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var blurStartTime: Date = .distantPast
     private var fallbackTimer: Timer?
     private var isAuthenticating = false
 
+    private var settingsObserver: Any?
+
+    // MARK: - Init / deinit
+
     private init() {
         sharedManagerRef = self
         setupCameraCallbacks()
         if settings.cameraEnabled { cameraMonitor.start() }
-        startMonitoring()
-        settingsObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in self?.updateCameraMonitoring() }
+        startIdleMonitoring()
+        observeSettingsChanges()
     }
 
     deinit {
@@ -87,60 +81,22 @@ final class BlurStateManager: ObservableObject {
     func shutdown() {
         cameraMonitor.stop()
         stateQueue.async { [weak self] in
-            guard let self else { return }
-            self.stopMonitoring()
-            self.removeEventTap()
+            self?.stopIdleMonitoring()
+            self?.removeEventTap()
         }
-        _stopFallbackPollingOnMain()
+        stopFallbackTimerOnMain()
         DispatchQueue.main.async { self.removeAllOverlays() }
     }
 
-    // MARK: - Camera monitoring
-
-    private func setupCameraCallbacks() {
-        cameraMonitor.onPeekDetected = { [weak self] in
-            self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraPeek) }
-        }
-        cameraMonitor.onUserAway = { [weak self] in
-            self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraAway) }
-        }
-    }
-
-    private func triggerFromCamera(reason: BlurReason) {
-        guard isEnabled, !queuePaused else { return }
-        guard queueState == .active || queueState == .countdown else { return }
-        if !settings.ignoredBundleIDs.isEmpty {
-            let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
-            if !settings.ignoredBundleIDs.isDisjoint(with: running) { return }
-        }
-        lastBlurReason = reason
-        if reason == .cameraPeek {
-            DispatchQueue.main.async {
-                self.peekCount += 1
-                UserDefaults.standard.set(self.peekCount, forKey: "peekCountToday")
-            }
-        }
-        stopMonitoring()
-        transitionTo(.blurred)
-    }
-
-    private func updateCameraMonitoring() {
-        if settings.cameraEnabled && isEnabled && !isPaused {
-            cameraMonitor.start()
-        } else {
-            cameraMonitor.stop()
-        }
-    }
-
-    // MARK: - Public control
+    // MARK: - Public controls
 
     func triggerInstantBlur() {
         stateQueue.async { [weak self] in
             guard let self, self.isEnabled, !self.queuePaused else { return }
             guard self.queueState == .active || self.queueState == .countdown else { return }
             self.lastBlurReason = .manual
-            self.stopMonitoring()
-            self.transitionTo(.blurred)
+            self.stopIdleMonitoring()
+            self.transition(to: .blurred)
         }
     }
 
@@ -149,10 +105,10 @@ final class BlurStateManager: ObservableObject {
         stateQueue.async { [weak self] in
             guard let self else { return }
             self.queuePaused = true
-            self.stopMonitoring()
-            self._stopFallbackPollingOnMain()
+            self.stopIdleMonitoring()
+            self.stopFallbackTimerOnMain()
             DispatchQueue.main.async { self.removeAllOverlays() }
-            self.setState(.active)
+            self.setQueueState(.active)
         }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -173,36 +129,138 @@ final class BlurStateManager: ObservableObject {
         stateQueue.async { [weak self] in
             guard let self else { return }
             self.queuePaused = false
-            if self.isEnabled { self.startMonitoring() }
+            if self.isEnabled { self.startIdleMonitoring() }
         }
         if settings.cameraEnabled && isEnabled { cameraMonitor.start() }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.isPaused = false
+            self.isPaused    = false
             self.pauseEndDate = nil
             self.pauseTimer?.invalidate()
-            self.pauseTimer = nil
+            self.pauseTimer  = nil
         }
     }
 
-    // MARK: - Thread-safe state setter
+    // MARK: - Enable / disable
 
-    private func setState(_ newState: BlurState) {
+    private func enableProtection() {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.startIdleMonitoring()
+            if self.settings.cameraEnabled { self.cameraMonitor.start() }
+        }
+    }
+
+    private func disableProtection() {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            self.stopIdleMonitoring()
+            self.stopFallbackTimerOnMain()
+            self.cameraMonitor.stop()
+            DispatchQueue.main.async { self.removeAllOverlays() }
+            self.setQueueState(.active)
+        }
+    }
+
+    // MARK: - Camera callbacks
+
+    private func setupCameraCallbacks() {
+        cameraMonitor.onPeekDetected = { [weak self] in
+            self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraPeek) }
+        }
+        cameraMonitor.onUserAway = { [weak self] in
+            self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraAway) }
+        }
+    }
+
+    private func triggerFromCamera(reason: BlurReason) {
+        guard isEnabled, !queuePaused else { return }
+        guard queueState == .active || queueState == .countdown else { return }
+
+        // Respect the auto-pause app list for camera triggers too.
+        if isIgnoredAppRunning() { return }
+
+        lastBlurReason = reason
+        if reason == .cameraPeek { incrementPeekCount() }
+        stopIdleMonitoring()
+        transition(to: .blurred)
+    }
+
+    private func isIgnoredAppRunning() -> Bool {
+        guard !settings.ignoredBundleIDs.isEmpty else { return false }
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
+        return !settings.ignoredBundleIDs.isDisjoint(with: running)
+    }
+
+    private func incrementPeekCount() {
+        DispatchQueue.main.async {
+            self.peekCount += 1
+            UserDefaults.standard.set(self.peekCount, forKey: "peekCountToday")
+        }
+    }
+
+    private func observeSettingsChanges() {
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.syncCameraMonitor() }
+    }
+
+    private func syncCameraMonitor() {
+        if settings.cameraEnabled && isEnabled && !isPaused {
+            cameraMonitor.start()
+        } else {
+            cameraMonitor.stop()
+        }
+    }
+
+    // MARK: - State machine
+
+    private func setQueueState(_ newState: BlurState) {
         guard queueState != newState else { return }
         queueState = newState
         DispatchQueue.main.async { self.currentState = newState }
     }
 
-    // MARK: - Monitoring
+    private func transition(to newState: BlurState) {
+        guard queueState != newState else { return }
+        let previous = queueState
+        setQueueState(newState)
 
-    private func startMonitoring() {
+        switch newState {
+        case .active:
+            startIdleMonitoring()
+
+        case .countdown:
+            stopIdleMonitoring()
+            DispatchQueue.main.async { self.beginCountdown() }
+
+        case .blurred:
+            if previous == .countdown {
+                DispatchQueue.main.async { self.dismissCountdown() }
+            }
+            blurStartTime = Date()
+            if previous != .unlocking {
+                DispatchQueue.main.async { self.showBlurOverlays() }
+            }
+            installEventTap()
+
+        case .unlocking:
+            DispatchQueue.main.async { self.attemptUnlock() }
+        }
+    }
+
+    // MARK: - Idle monitoring
+
+    private func startIdleMonitoring() {
         idleMonitor.onIdleTimeUpdated = { [weak self] idleTime in
             self?.stateQueue.async { self?.handleIdleUpdate(idleTime) }
         }
         idleMonitor.start()
     }
 
-    private func stopMonitoring() {
+    private func stopIdleMonitoring() {
         idleMonitor.stop()
         countdownTimer?.invalidate()
         countdownTimer = nil
@@ -210,61 +268,38 @@ final class BlurStateManager: ObservableObject {
 
     private func handleIdleUpdate(_ idleTime: TimeInterval) {
         guard isEnabled, !queuePaused else { return }
-        if !settings.ignoredBundleIDs.isEmpty {
-            let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier })
-            if !settings.ignoredBundleIDs.isDisjoint(with: running) { return }
-        }
-        if queueState == .active, idleTime >= settings.idleTimeout {
+        guard queueState == .active else { return }
+        if isIgnoredAppRunning() { return }
+        if idleTime >= settings.idleTimeout {
             lastBlurReason = .idle
-            transitionTo(.countdown)
-        }
-    }
-
-    private func transitionTo(_ newState: BlurState) {
-        guard queueState != newState else { return }
-        let oldState = queueState
-        setState(newState)
-
-        switch newState {
-        case .active:
-            startMonitoring()
-        case .countdown:
-            stopMonitoring()
-            DispatchQueue.main.async { self.startCountdown() }
-        case .blurred:
-            if oldState == .countdown {
-                DispatchQueue.main.async { self.dismissCountdownOverlay() }
-            }
-            blurStartTime = Date()
-            if oldState != .unlocking {
-                DispatchQueue.main.async { self.showBlurOverlays() }
-            }
-            installEventTap()
-        case .unlocking:
-            DispatchQueue.main.async { self.attemptUnlock() }
+            transition(to: .countdown)
         }
     }
 
     // MARK: - Countdown (main thread)
 
-    private func startCountdown() {
+    private func beginCountdown() {
         countdownSeconds = 10
-        showCountdownOverlay()
+        countdownOverlay = CountdownOverlay()
+        countdownOverlay?.show(count: countdownSeconds)
 
         countdownTimer?.invalidate()
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let idleTime = IdleMonitor.userIdleTime()
-            if idleTime < 2.0 {
+
+            // Cancel if user moved — idle time resets when input is detected.
+            if IdleMonitor.secondsSinceLastInput() < 2.0 {
                 self.cancelCountdown()
                 return
             }
+
             self.countdownSeconds -= 1
             self.countdownOverlay?.updateCount(self.countdownSeconds)
+
             if self.countdownSeconds <= 0 {
                 self.countdownTimer?.invalidate()
                 self.countdownTimer = nil
-                self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
+                self.stateQueue.async { self.transition(to: .blurred) }
             }
         }
     }
@@ -272,81 +307,69 @@ final class BlurStateManager: ObservableObject {
     private func cancelCountdown() {
         countdownTimer?.invalidate()
         countdownTimer = nil
-        dismissCountdownOverlay()
-        stateQueue.async { [weak self] in self?.transitionTo(.active) }
+        dismissCountdown()
+        stateQueue.async { self.transition(to: .active) }
     }
 
-    private func showCountdownOverlay() {
-        let overlay = CountdownOverlay()
-        overlay.show(count: countdownSeconds)
-        countdownOverlay = overlay
-    }
-
-    private func dismissCountdownOverlay() {
+    private func dismissCountdown() {
         countdownOverlay?.dismiss()
         countdownOverlay = nil
     }
 
-    // MARK: - Blur Overlays (main thread)
+    // MARK: - Blur overlays (main thread)
 
     private func showBlurOverlays() {
         removeAllOverlays()
         let reason = lastBlurReason
         for screen in NSScreen.screens {
-            let window = BlurOverlayWindow(screen: screen, reason: reason)
-            window.show()
-            blurWindows.append(window)
+            let overlay = BlurOverlayWindow(screen: screen, reason: reason)
+            overlay.show()
+            blurWindows.append(overlay)
         }
     }
 
     private func removeAllOverlays() {
-        for window in blurWindows { window.dismiss() }
+        blurWindows.forEach { $0.dismiss() }
         blurWindows.removeAll()
     }
 
-    // MARK: - Event Tap
+    // MARK: - Event tap
+    //
+    // CGEventTap lets us detect any keypress/mouse-move while the screen is
+    // blurred without relying on the app being frontmost.
+    // We use .listenOnly so events are never suppressed — we only observe.
 
     private func installEventTap() {
         removeEventTap()
 
         guard AXIsProcessTrusted() else {
-            notifyAccessibilityRequired()
+            promptAccessibilityPermission()
             startFallbackPolling()
             return
         }
 
-        let eventMask: CGEventMask =
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.mouseMoved.rawValue) |
-            (1 << CGEventType.leftMouseDown.rawValue) |
+        let mask: CGEventMask =
+            (1 << CGEventType.keyDown.rawValue)       |
+            (1 << CGEventType.mouseMoved.rawValue)     |
+            (1 << CGEventType.leftMouseDown.rawValue)  |
             (1 << CGEventType.rightMouseDown.rawValue) |
             (1 << CGEventType.flagsChanged.rawValue)
 
-        // FIX: break retain cycle — callback captures nothing strongly.
-        // All access goes through sharedManagerRef (weak). The async block
-        // captures manager with [weak manager] so it doesn't extend lifetime.
+        // The callback is a plain C closure — it cannot capture self.
+        // All access goes through sharedManagerRef (weak global at file scope).
         let callback: CGEventTapCallBack = { _, type, event, _ in
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                if let tap = sharedManagerRef?.eventTap {
-                    CGEvent.tapEnable(tap: tap, enable: true)
-                }
+                if let tap = sharedManagerRef?.eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
                 return Unmanaged.passRetained(event)
             }
 
-            // Snapshot weak ref once — safe for the duration of this C callback
-            guard let manager = sharedManagerRef else {
-                return Unmanaged.passRetained(event)
-            }
+            guard let manager = sharedManagerRef else { return Unmanaged.passRetained(event) }
 
-            // FIX: move elapsed + state check onto stateQueue so blurStartTime
-            // is always read on the same queue it is written on (no data race).
+            // Read blurStartTime on stateQueue to avoid a data race.
             manager.stateQueue.async { [weak manager] in
                 guard let manager else { return }
-                let elapsed = Date().timeIntervalSince(manager.blurStartTime)
-                guard elapsed >= 1.0 else { return }
-                if manager.queueState == .blurred {
-                    manager.transitionTo(.unlocking)
-                }
+                guard Date().timeIntervalSince(manager.blurStartTime) >= 1.0 else { return }
+                if manager.queueState == .blurred { manager.transition(to: .unlocking) }
             }
             return Unmanaged.passRetained(event)
         }
@@ -355,7 +378,7 @@ final class BlurStateManager: ObservableObject {
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .listenOnly,
-            eventsOfInterest: eventMask,
+            eventsOfInterest: mask,
             callback: callback,
             userInfo: nil
         ) else {
@@ -363,18 +386,17 @@ final class BlurStateManager: ObservableObject {
             return
         }
 
-        eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        // FIX: stop fallback polling now that the event tap is installed.
-        _stopFallbackPollingOnMain()
+        eventTap = tap
+        stopFallbackTimerOnMain()
     }
 
     private func removeEventTap() {
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        if let src = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), src, .commonModes)
             runLoopSource = nil
         }
         if let tap = eventTap {
@@ -383,37 +405,35 @@ final class BlurStateManager: ObservableObject {
         }
     }
 
-    private func notifyAccessibilityRequired() {
+    private func promptAccessibilityPermission() {
         DispatchQueue.main.async {
-            let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-            AXIsProcessTrustedWithOptions(opts as CFDictionary)
+            let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
         }
     }
 
-    // MARK: - Fallback Polling
+    // MARK: - Fallback polling (used when accessibility permission is not granted)
 
     private func startFallbackPolling() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.fallbackTimer?.invalidate()
             self.fallbackTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                self.stateQueue.async { [weak self] in
+                self?.stateQueue.async { [weak self] in
                     guard let self, self.queueState == .blurred else { return }
-                    let elapsed = Date().timeIntervalSince(self.blurStartTime)
-                    guard elapsed > 1.0 else { return }
-                    if IdleMonitor.userIdleTime() < 1.0 {
-                        self._stopFallbackPollingOnMain()
-                        self.transitionTo(.unlocking)
+                    guard Date().timeIntervalSince(self.blurStartTime) > 1.0 else { return }
+                    if IdleMonitor.secondsSinceLastInput() < 1.0 {
+                        self.stopFallbackTimerOnMain()
+                        self.transition(to: .unlocking)
                     }
                 }
             }
         }
     }
 
-    /// Stop fallback timer on main thread without going through stateQueue
-    /// (avoids deadlock when called from main or stateQueue).
-    private func _stopFallbackPollingOnMain() {
+    // Stopping the timer must happen on the main thread (where it was scheduled).
+    // This helper is safe to call from either stateQueue or main.
+    private func stopFallbackTimerOnMain() {
         DispatchQueue.main.async { [weak self] in
             self?.fallbackTimer?.invalidate()
             self?.fallbackTimer = nil
@@ -423,51 +443,49 @@ final class BlurStateManager: ObservableObject {
     // MARK: - Unlock (main thread)
 
     private func attemptUnlock() {
-        // FIX: guard against concurrent auth calls (e.g. event fires during failure recovery)
         guard !isAuthenticating else { return }
         isAuthenticating = true
 
-        stateQueue.async { [weak self] in
-            self?.removeEventTap()
-        }
-        _stopFallbackPollingOnMain()
+        stateQueue.async { [weak self] in self?.removeEventTap() }
+        stopFallbackTimerOnMain()
+        blurWindows.forEach { $0.passThrough(true) }
 
-        for window in blurWindows { window.passThrough(true) }
-
-        // Bring app forward so the LA dialog (Touch ID / password) is visible.
+        // Bring the app forward so the Touch ID / password dialog is visible.
         NSApp.activate(ignoringOtherApps: true)
 
-        let needsAuth: Bool
-        switch lastBlurReason {
-        case .cameraPeek: needsAuth = settings.peekResponse == "lock"
-        case .cameraAway: needsAuth = settings.awayResponse == "lock"
-        case .idle, .manual: needsAuth = settings.requireAuth
-        }
-
-        // Safety: if the completion is never called (e.g. LAContext hangs), reset after 30s.
+        // Safety net: if LAContext never calls back (e.g. hardware failure),
+        // reset after 30 s so the user isn't permanently locked out.
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
             guard let self, self.isAuthenticating else { return }
             self.isAuthenticating = false
-            for window in self.blurWindows { window.passThrough(false) }
-            self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
+            self.blurWindows.forEach { $0.passThrough(false) }
+            self.stateQueue.async { self.transition(to: .blurred) }
         }
 
-        unlockHandler.authenticate(requireAuth: needsAuth) { [weak self] result in
+        unlockHandler.authenticate(requireAuth: authRequired()) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isAuthenticating = false
                 switch result {
                 case .success:
                     self.removeAllOverlays()
-                    self.stateQueue.async { [weak self] in self?.transitionTo(.active) }
-                case .failure(let reason):
-                    for window in self.blurWindows {
-                        window.passThrough(false)
-                        window.showMessage(reason)
+                    self.stateQueue.async { self.transition(to: .active) }
+                case .failure(let message):
+                    self.blurWindows.forEach {
+                        $0.passThrough(false)
+                        $0.showMessage(message)
                     }
-                    self.stateQueue.async { [weak self] in self?.transitionTo(.blurred) }
+                    self.stateQueue.async { self.transition(to: .blurred) }
                 }
             }
+        }
+    }
+
+    private func authRequired() -> Bool {
+        switch lastBlurReason {
+        case .cameraPeek: return settings.peekResponse == "lock"
+        case .cameraAway: return settings.awayResponse == "lock"
+        case .idle, .manual: return settings.requireAuth
         }
     }
 }

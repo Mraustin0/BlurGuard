@@ -4,31 +4,35 @@ import Vision
 final class CameraPresenceMonitor: NSObject {
 
     var onPeekDetected: (() -> Void)?
-    var onUserAway: (() -> Void)?
+    var onUserAway:     (() -> Void)?
+
+    private(set) var isRunning = false
 
     private var session: AVCaptureSession?
-    private let sessionQueue = DispatchQueue(label: "com.blurguard.camera", qos: .utility)
-    private var lastProcessedTime: Date = .distantPast
+    private let sessionQueue   = DispatchQueue(label: "com.blurguard.camera", qos: .utility)
+    private var lastFrameDate  = Date.distantPast
     private let frameInterval: TimeInterval = 1.0
+    private var noFaceSince:   Date?
 
-    private var noFaceSince: Date?
-    private(set) var isRunning = false
+    // MARK: - Start / Stop
 
     func start() {
         guard !isRunning else { return }
-        requestPermissionAndStart()
+        requestCameraAccessThenStart()
     }
 
     func stop() {
-        isRunning = false
-        noFaceSince = nil
+        isRunning    = false
+        noFaceSince  = nil
         sessionQueue.async { [weak self] in
             self?.session?.stopRunning()
             self?.session = nil
         }
     }
 
-    private func requestPermissionAndStart() {
+    // MARK: - Permission + setup
+
+    private func requestCameraAccessThenStart() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             sessionQueue.async { self.setupSession() }
@@ -42,70 +46,83 @@ final class CameraPresenceMonitor: NSObject {
     }
 
     private func setupSession() {
-        let s = AVCaptureSession()
-        s.sessionPreset = .low
+        let capture = AVCaptureSession()
+        capture.sessionPreset = .low
 
-        guard let device = findCamera(),
-              let input = try? AVCaptureDeviceInput(device: device),
-              s.canAddInput(input) else { return }
-        s.addInput(input)
+        guard
+            let device = frontCamera(),
+            let input  = try? AVCaptureDeviceInput(device: device),
+            capture.canAddInput(input)
+        else { return }
+        capture.addInput(input)
 
         let output = AVCaptureVideoDataOutput()
         output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         output.setSampleBufferDelegate(self, queue: sessionQueue)
         output.alwaysDiscardsLateVideoFrames = true
-        guard s.canAddOutput(output) else { return }
-        s.addOutput(output)
 
-        session = s
+        guard capture.canAddOutput(output) else { return }
+        capture.addOutput(output)
+
+        session   = capture
         isRunning = true
-        s.startRunning()
+        capture.startRunning()
     }
 
-    private func findCamera() -> AVCaptureDevice? {
+    private func frontCamera() -> AVCaptureDevice? {
         AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
             ?? AVCaptureDevice.default(for: .video)
     }
 }
 
+// MARK: - Frame processing
+
 extension CameraPresenceMonitor: AVCaptureVideoDataOutputSampleBufferDelegate {
+
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         let now = Date()
-        guard now.timeIntervalSince(lastProcessedTime) >= frameInterval else { return }
-        lastProcessedTime = now
+        guard now.timeIntervalSince(lastFrameDate) >= frameInterval else { return }
+        lastFrameDate = now
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
+        let faceCount = countFaces(in: pixelBuffer)
+        handleFaceCount(faceCount, at: now)
+    }
+
+    private func countFaces(in pixelBuffer: CVPixelBuffer) -> Int {
         let request = VNDetectFaceRectanglesRequest()
         try? VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
             .perform([request])
 
+        // Map sensitivity 0→1 to a confidence threshold 0.7→0.2.
+        // Higher sensitivity = lower threshold = more detections at worse angles.
         let sensitivity = SettingsManager.shared.cameraSensitivity
-        let threshold = Float(0.7 - sensitivity * 0.5)   // 0.7 (low sens) → 0.2 (high sens)
-        let count = request.results?
-            .filter { $0.confidence >= threshold }
-            .count ?? 0
+        let threshold   = Float(0.7 - sensitivity * 0.5)
 
-        handleFaceCount(count, at: now)
+        return request.results?.filter { $0.confidence >= threshold }.count ?? 0
     }
 
-    private func handleFaceCount(_ count: Int, at time: Date) {
-        if count >= 2 {
-            // Someone peeking — blur immediately
+    private func handleFaceCount(_ count: Int, at now: Date) {
+        switch count {
+        case 2...:
+            // Two or more faces means someone is looking over the user's shoulder.
             noFaceSince = nil
             onPeekDetected?()
-        } else if count == 0 {
-            // No face — start away timer
-            if noFaceSince == nil { noFaceSince = time }
-            let awayDelay = TimeInterval(SettingsManager.shared.cameraAwayDelay)
-            if let since = noFaceSince, time.timeIntervalSince(since) >= awayDelay {
+
+        case 0:
+            // No face — start or continue the away timer.
+            if noFaceSince == nil { noFaceSince = now }
+            let delay = TimeInterval(SettingsManager.shared.cameraAwayDelay)
+            if let since = noFaceSince, now.timeIntervalSince(since) >= delay {
                 noFaceSince = nil
                 onUserAway?()
             }
-        } else {
-            // Exactly 1 face — user is present, reset away timer
+
+        default:
+            // Exactly one face — user is present. Reset the away timer.
             noFaceSince = nil
         }
     }

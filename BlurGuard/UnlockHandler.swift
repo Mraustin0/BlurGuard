@@ -7,6 +7,7 @@ enum UnlockResult {
 }
 
 final class UnlockHandler {
+
     func authenticate(requireAuth: Bool, completion: @escaping (UnlockResult) -> Void) {
         guard requireAuth else {
             completion(.success)
@@ -16,9 +17,9 @@ final class UnlockHandler {
         let context = LAContext()
         context.localizedCancelTitle = "Cancel"
 
-        var authError: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
-            let reason = authError?.localizedDescription ?? "Authentication unavailable"
+        var policyError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
+            let reason = policyError?.localizedDescription ?? "Authentication unavailable"
             completion(.failure("Cannot authenticate: \(reason)"))
             return
         }
@@ -30,8 +31,7 @@ final class UnlockHandler {
             if success {
                 completion(.success)
             } else {
-                let reason = error?.localizedDescription ?? "Authentication failed"
-                completion(.failure(reason))
+                completion(.failure(error?.localizedDescription ?? "Authentication failed"))
             }
         }
     }

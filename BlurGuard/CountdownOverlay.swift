@@ -5,77 +5,93 @@ final class CountdownOverlay {
     private var countLabel: NSTextField?
     private var messageLabel: NSTextField?
 
+    private let panelSize = NSSize(width: 300, height: 150)
+
     func show(count: Int) {
-        // Fallback to first available screen if main is nil (e.g. display disconnected)
-        guard let mainScreen = NSScreen.main ?? NSScreen.screens.first else { return }
+        // Fall back to any available screen if main display is disconnected.
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
 
-        let panelWidth: CGFloat = 300
-        let panelHeight: CGFloat = 150
-        let screenFrame = mainScreen.frame
-        let origin = NSPoint(
-            x: screenFrame.midX - panelWidth / 2,
-            y: screenFrame.midY - panelHeight / 2
-        )
+        let win = makeWindow(on: screen)
+        let panel = makeGlassPanel(size: panelSize)
+        win.contentView = panel
 
-        let win = NSWindow(
-            contentRect: NSRect(origin: origin, size: NSSize(width: panelWidth, height: panelHeight)),
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false,
-            screen: mainScreen
-        )
-        win.level = .screenSaver + 1
-        win.isOpaque = false
-        win.backgroundColor = .clear
-        win.ignoresMouseEvents = true
-        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-        let visualEffect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
-        visualEffect.material = .hudWindow
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 20
-        visualEffect.layer?.masksToBounds = true
-        win.contentView = visualEffect
-
-        let countField = NSTextField(labelWithString: "\(count)")
-        countField.font = NSFont.monospacedDigitSystemFont(ofSize: 48, weight: .bold)
-        countField.textColor = .white
-        countField.alignment = .center
-        countField.translatesAutoresizingMaskIntoConstraints = false
-        visualEffect.addSubview(countField)
-
-        let msgField = NSTextField(labelWithString: "Screen locking in \(count)s")
-        msgField.font = NSFont.systemFont(ofSize: 16, weight: .medium)
+        let countField = makeLabel(text: "\(count)", font: .monospacedDigitSystemFont(ofSize: 48, weight: .bold))
+        let msgField   = makeLabel(text: subtitle(for: count), font: .systemFont(ofSize: 16, weight: .medium))
         msgField.textColor = .secondaryLabelColor
-        msgField.alignment = .center
-        msgField.translatesAutoresizingMaskIntoConstraints = false
-        visualEffect.addSubview(msgField)
+
+        panel.addSubview(countField)
+        panel.addSubview(msgField)
 
         NSLayoutConstraint.activate([
-            countField.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
-            countField.centerYAnchor.constraint(equalTo: visualEffect.centerYAnchor, constant: -15),
-            msgField.centerXAnchor.constraint(equalTo: visualEffect.centerXAnchor),
+            countField.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
+            countField.centerYAnchor.constraint(equalTo: panel.centerYAnchor, constant: -15),
+            msgField.centerXAnchor.constraint(equalTo: panel.centerXAnchor),
             msgField.topAnchor.constraint(equalTo: countField.bottomAnchor, constant: 8),
         ])
 
         win.makeKeyAndOrderFront(nil)
-        self.window = win
-        self.countLabel = countField
-        self.messageLabel = msgField
+        window     = win
+        countLabel = countField
+        messageLabel = msgField
     }
 
     func updateCount(_ count: Int) {
-        countLabel?.stringValue = "\(count)"
-        messageLabel?.stringValue = "Screen locking in \(count)s"
+        countLabel?.stringValue   = "\(count)"
+        messageLabel?.stringValue = subtitle(for: count)
     }
 
     func dismiss() {
         window?.orderOut(nil)
         window?.close()
-        window = nil
-        countLabel = nil
+        window       = nil
+        countLabel   = nil
         messageLabel = nil
+    }
+
+    // MARK: - Private helpers
+
+    private func subtitle(for count: Int) -> String {
+        "Screen locking in \(count)s"
+    }
+
+    private func makeWindow(on screen: NSScreen) -> NSWindow {
+        let origin = NSPoint(
+            x: screen.frame.midX - panelSize.width / 2,
+            y: screen.frame.midY - panelSize.height / 2
+        )
+        let win = NSWindow(
+            contentRect: NSRect(origin: origin, size: panelSize),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        // Level above screenSaver so it sits on top of the blur overlay.
+        win.level = .screenSaver + 1
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.ignoresMouseEvents = true
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        return win
+    }
+
+    private func makeGlassPanel(size: NSSize) -> NSVisualEffectView {
+        let view = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+        view.material     = .hudWindow
+        view.blendingMode = .behindWindow
+        view.state        = .active
+        view.wantsLayer   = true
+        view.layer?.cornerRadius  = 20
+        view.layer?.masksToBounds = true
+        return view
+    }
+
+    private func makeLabel(text: String, font: NSFont) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font      = font
+        field.textColor = .white
+        field.alignment = .center
+        field.translatesAutoresizingMaskIntoConstraints = false
+        return field
     }
 }
