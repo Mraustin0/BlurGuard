@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 final class HotkeyManager {
     static let shared = HotkeyManager()
@@ -6,6 +7,8 @@ final class HotkeyManager {
     var onTrigger: (() -> Void)?
 
     private var monitor: Any?
+    // Avoid spamming the OS prompt — it'll only show once per session anyway.
+    private var hasPromptedForAX = false
 
     // MARK: - Carbon modifier bit-masks
     // Can't replace with OptionSet — CGEventFlags and NSEvent.ModifierFlags use
@@ -22,7 +25,7 @@ final class HotkeyManager {
         reregister()
     }
 
-    func update(keyCode: UInt32, carbonModifiers: UInt32) {
+    func update() {
         reregister()
     }
 
@@ -30,6 +33,17 @@ final class HotkeyManager {
         if let existing = monitor {
             NSEvent.removeMonitor(existing)
             monitor = nil
+        }
+
+        // Global key monitors require Accessibility permission. Without it the
+        // monitor installs silently but never fires, leaving the user wondering
+        // why their hotkey doesn't work.
+        if !AXIsProcessTrusted() && !hasPromptedForAX {
+            hasPromptedForAX = true
+            DispatchQueue.main.async {
+                let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+                AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+            }
         }
 
         let targetKeyCode  = SettingsManager.shared.hotkeyKeyCode

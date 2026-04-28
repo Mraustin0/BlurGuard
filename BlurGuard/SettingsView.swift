@@ -293,7 +293,7 @@ struct SettingsView: View {
             SettingsManager.shared.hotkeyKeyCode  = kc
             SettingsManager.shared.hotkeyModifiers = Int(cm)
             SettingsManager.shared.hotkeyDisplay   = disp
-            HotkeyManager.shared.update(keyCode: UInt32(kc), carbonModifiers: cm)
+            HotkeyManager.shared.update()
             hotkeyDisplay = disp
             isRecordingHotkey = false
             return nil

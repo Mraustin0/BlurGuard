@@ -28,7 +28,20 @@ final class BlurStateManager: ObservableObject {
     @Published private(set) var currentState: BlurState = .active
     @Published private(set) var isPaused:     Bool      = false
     @Published private(set) var pauseEndDate: Date?     = nil
-    @Published private(set) var peekCount:    Int       = UserDefaults.standard.integer(forKey: "peekCountToday")
+    @Published private(set) var peekCount:    Int       = BlurStateManager.loadPeekCountForToday()
+
+    // Persistence keys for the peek counter.
+    private static let peekCountKey     = "peekCountToday"
+    private static let peekCountDateKey = "peekCountDate"
+
+    // Reads stored peek count only if it was last updated today; otherwise 0.
+    private static func loadPeekCountForToday() -> Int {
+        let defaults = UserDefaults.standard
+        guard let date = defaults.object(forKey: peekCountDateKey) as? Date,
+              Calendar.current.isDateInToday(date)
+        else { return 0 }
+        return defaults.integer(forKey: peekCountKey)
+    }
 
     @Published var isEnabled: Bool = true {
         didSet { isEnabled ? enableProtection() : disableProtection() }
@@ -171,6 +184,11 @@ final class BlurStateManager: ObservableObject {
         cameraMonitor.onUserAway = { [weak self] in
             self?.stateQueue.async { self?.triggerFromCamera(reason: .cameraAway) }
         }
+        cameraMonitor.onPermissionDenied = { [weak self] in
+            // Camera access was denied — flip the setting off so the toggle in
+            // the panel reflects what's actually happening (or rather, isn't).
+            self?.settings.cameraEnabled = false
+        }
     }
 
     private func triggerFromCamera(reason: BlurReason) {
@@ -194,8 +212,23 @@ final class BlurStateManager: ObservableObject {
 
     private func incrementPeekCount() {
         DispatchQueue.main.async {
+            self.rolloverPeekCountIfNeeded()
             self.peekCount += 1
-            UserDefaults.standard.set(self.peekCount, forKey: "peekCountToday")
+            let defaults = UserDefaults.standard
+            defaults.set(self.peekCount, forKey: Self.peekCountKey)
+            defaults.set(Date(),         forKey: Self.peekCountDateKey)
+        }
+    }
+
+    // Resets the in-memory peek counter to 0 if the stored date isn't today.
+    // Called on increment and whenever the settings panel becomes visible so
+    // a long-running app doesn't display yesterday's number.
+    func rolloverPeekCountIfNeeded() {
+        let defaults = UserDefaults.standard
+        let date = defaults.object(forKey: Self.peekCountDateKey) as? Date
+        if date == nil || !Calendar.current.isDateInToday(date!) {
+            if peekCount != 0 { peekCount = 0 }
+            defaults.set(0, forKey: Self.peekCountKey)
         }
     }
 
@@ -257,13 +290,18 @@ final class BlurStateManager: ObservableObject {
         idleMonitor.onIdleTimeUpdated = { [weak self] idleTime in
             self?.stateQueue.async { self?.handleIdleUpdate(idleTime) }
         }
-        idleMonitor.start()
+        // Timer.scheduledTimer needs a running RunLoop, which only the main
+        // thread reliably has — DispatchQueue threads don't.
+        DispatchQueue.main.async { [weak self] in self?.idleMonitor.start() }
     }
 
     private func stopIdleMonitoring() {
-        idleMonitor.stop()
-        countdownTimer?.invalidate()
-        countdownTimer = nil
+        // Timer.invalidate() must run on the same runloop that scheduled it.
+        DispatchQueue.main.async { [weak self] in
+            self?.idleMonitor.stop()
+            self?.countdownTimer?.invalidate()
+            self?.countdownTimer = nil
+        }
     }
 
     private func handleIdleUpdate(_ idleTime: TimeInterval) {

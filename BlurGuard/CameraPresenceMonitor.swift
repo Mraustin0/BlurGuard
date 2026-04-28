@@ -3,8 +3,9 @@ import Vision
 
 final class CameraPresenceMonitor: NSObject {
 
-    var onPeekDetected: (() -> Void)?
-    var onUserAway:     (() -> Void)?
+    var onPeekDetected:     (() -> Void)?
+    var onUserAway:         (() -> Void)?
+    var onPermissionDenied: (() -> Void)?
 
     private(set) var isRunning = false
 
@@ -38,10 +39,15 @@ final class CameraPresenceMonitor: NSObject {
             sessionQueue.async { self.setupSession() }
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { granted in
-                if granted { self.sessionQueue.async { self.setupSession() } }
+                if granted {
+                    self.sessionQueue.async { self.setupSession() }
+                } else {
+                    DispatchQueue.main.async { self.onPermissionDenied?() }
+                }
             }
         default:
-            break
+            // .denied or .restricted — surface the failure so UI stays truthful.
+            DispatchQueue.main.async { self.onPermissionDenied?() }
         }
     }
 

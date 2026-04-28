@@ -82,6 +82,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsPopover?.isShown == true {
             settingsPopover?.performClose(nil)
         } else {
+            BlurStateManager.shared.rolloverPeekCountIfNeeded()
             settingsPopover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
@@ -89,8 +90,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Hotkey
 
     private func setupHotkey() {
-        let s = SettingsManager.shared
-        HotkeyManager.shared.update(keyCode: UInt32(s.hotkeyKeyCode), carbonModifiers: UInt32(s.hotkeyModifiers))
+        HotkeyManager.shared.update()
         HotkeyManager.shared.onTrigger = { BlurStateManager.shared.triggerInstantBlur() }
     }
 }
